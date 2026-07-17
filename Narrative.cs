@@ -199,15 +199,16 @@ public static class Narrative
         {
             sb.AppendLine($"**Smoking gun:** an aggregation query ran {topAgg.ExecutionCount:N0} times for " +
                           $"**{topAgg.TotalLogicalReads:N0} reads and {topAgg.TotalCpuMs / 1000:N0}s CPU** — " +
-                          "exactly the GROUP-BY/SUM shape that batch-mode columnstore accelerates. " +
-                          $"`{Trim(topAgg.StatementText, 140)}`");
+                          "exactly the GROUP-BY/SUM shape that batch-mode columnstore accelerates.\n" +
+                          $"```sql\n{Trim(topAgg.StatementText, 3000)}\n```");
         }
         else if (top is { TotalLogicalReads: > 500_000 })
         {
             var perExec = top.ExecutionCount > 0 ? (double)top.TotalLogicalReads / top.ExecutionCount : 0;
+            sb.AppendLine();
             sb.AppendLine(
-                $"Heaviest cached query: {top.ExecutionCount:N0} executions, {top.TotalLogicalReads:N0} reads " +
-                $"(~{perExec:N0}/exec), {top.TotalCpuMs / 1000:N0}s CPU: `{Trim(top.StatementText, 140)}`");
+                $"**Heaviest cached query:** {top.ExecutionCount:N0} executions, {top.TotalLogicalReads:N0} reads " +
+                $"(~{perExec:N0}/exec), {top.TotalCpuMs / 1000:N0}s CPU:\n\n```sql\n{Trim(top.StatementText, 3000)}\n```");
             if (ContainsIgnoreCase(top.StatementText, "OPENJSON"))
                 sb.AppendLine("It shreds JSON with OPENJSON on every run — consider promoting the queried JSON " +
                               "properties to real (or persisted computed) columns instead of re-parsing blobs.");
