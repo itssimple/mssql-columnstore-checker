@@ -77,6 +77,7 @@ Console shows a ranked summary; the output folder gets:
   (EXCELLENT / GOOD / NEUTRAL / POOR / BAD-dictionary-pressure)
 - `3_index_inventory.csv` — every index with size and columns; wide and dead indexes flagged
 - `4_referencing_queries.csv` — cached statements per table, ranked by logical reads
+- `5_analysis.md` — narrative analysis of each table, with punch-list of reclaimable MB
 - `full_report.json` — everything, machine-readable
 
 ## Reading the results
