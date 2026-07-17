@@ -129,6 +129,6 @@ dotnet run -- --server SQLPROD01 --database SalesDW --llm-endpoint http://localh
 ```
 
 The tool sends a compact JSON summary (table stats, column cardinality, indexes, top 5 queries
-trimmed to 300 chars) plus the rule-based findings as grounding. If the endpoint fails, the
+trimmed to 3000 chars) plus the rule-based findings as grounding. If the endpoint fails, the
 rule-based analysis still stands — the LLM is strictly additive. Note that query text is sent
 to the endpoint, so keep it to servers you control if statements may contain sensitive literals.
