@@ -18,7 +18,8 @@ internal static class PasswordInput
             if (key.Key == ConsoleKey.Enter) { Console.WriteLine(); break; }
             if (key.Key == ConsoleKey.Backspace)
             {
-                if (sb.Length > 0) { sb.Length--; Console.Write("\b \b"); }
+                if (sb.Length <= 0) continue;
+                sb.Length--; Console.Write("\b \b");
             }
             else if (!char.IsControl(key.KeyChar))
             {

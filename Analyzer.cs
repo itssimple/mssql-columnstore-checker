@@ -1,4 +1,3 @@
-using System.Data;
 using Microsoft.Data.SqlClient;
 
 namespace ColumnstoreAnalyzer;
@@ -28,6 +27,7 @@ public sealed class Analyzer
         {
             b.IntegratedSecurity = true;
         }
+
         _connectionString = b.ConnectionString;
     }
 
@@ -41,7 +41,8 @@ public sealed class Analyzer
     public (int majorVersion, DateTime startTime, int uptimeDays) GetServerInfo()
     {
         using var conn = Open();
-        using var cmd = new SqlCommand(Sql.ServerInfo, conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+        using var cmd = new SqlCommand(Sql.ServerInfo, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
         using var r = cmd.ExecuteReader();
         r.Read();
         return (int.Parse(r.GetString(0)), r.GetDateTime(1), r.GetInt32(2));
@@ -51,7 +52,8 @@ public sealed class Analyzer
     {
         var tables = new List<TableInfo>();
         using var conn = Open();
-        using var cmd = new SqlCommand(Sql.DiscoverTables, conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+        using var cmd = new SqlCommand(Sql.DiscoverTables, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
         cmd.Parameters.AddWithValue("@MinRowCount", _opt.MinRowCount);
         cmd.Parameters.AddWithValue("@MinTableSizeMB", _opt.MinTableSizeMb);
         cmd.Parameters.AddWithValue("@TopN", _opt.TopNCandidates);
@@ -78,30 +80,31 @@ public sealed class Analyzer
                 MissingIndexSuggestions = r.GetInt32(r.GetOrdinal("missing_index_suggestions"))
             });
         }
+
         return tables;
     }
 
     public void LoadOperationalStats(TableInfo t)
     {
         using var conn = Open();
-        using var cmd = new SqlCommand(Sql.OperationalStats, conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+        using var cmd = new SqlCommand(Sql.OperationalStats, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
         cmd.Parameters.AddWithValue("@ObjectId", t.ObjectId);
         using var r = cmd.ExecuteReader();
-        if (r.Read())
-        {
-            t.RowLockWaitMs = r.GetInt64(0);
-            t.PageLockWaitMs = r.GetInt64(1);
-            t.PageIoLatchWaitMs = r.GetInt64(2);
-            t.LeafInserts = r.GetInt64(3);
-            t.LeafUpdates = r.GetInt64(4);
-            t.LeafDeletes = r.GetInt64(5);
-        }
+        if (!r.Read()) return;
+        t.RowLockWaitMs = r.GetInt64(0);
+        t.PageLockWaitMs = r.GetInt64(1);
+        t.PageIoLatchWaitMs = r.GetInt64(2);
+        t.LeafInserts = r.GetInt64(3);
+        t.LeafUpdates = r.GetInt64(4);
+        t.LeafDeletes = r.GetInt64(5);
     }
 
     public void LoadColumns(TableInfo t)
     {
         using var conn = Open();
-        using var cmd = new SqlCommand(Sql.GetColumns, conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+        using var cmd = new SqlCommand(Sql.GetColumns, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
         cmd.Parameters.AddWithValue("@ObjectId", t.ObjectId);
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -120,7 +123,8 @@ public sealed class Analyzer
     public void LoadIndexes(TableInfo t)
     {
         using var conn = Open();
-        using var cmd = new SqlCommand(Sql.GetIndexes, conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+        using var cmd = new SqlCommand(Sql.GetIndexes, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
         cmd.Parameters.AddWithValue("@ObjectId", t.ObjectId);
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -141,10 +145,14 @@ public sealed class Analyzer
             };
 
             var reads = ix.UserSeeks + ix.UserScans + ix.UserLookups;
-            if (ix.TypeDesc == "NONCLUSTERED" && reads == 0 && ix.UserUpdates > 0)
-                ix.Note = "DROP CANDIDATE: written to, never read (since last restart)";
-            else if (ix.TypeDesc == "NONCLUSTERED" && ix.IncludedColumnCount >= 5)
-                ix.Note = "WIDE: 5+ included columns - likely replaceable by columnstore";
+            ix.Note = ix.TypeDesc switch
+            {
+                "NONCLUSTERED" when reads == 0 && ix.UserUpdates > 0 =>
+                    "DROP CANDIDATE: written to, never read (since last restart)",
+                "NONCLUSTERED" when ix.IncludedColumnCount >= 5 =>
+                    "WIDE: 5+ included columns - likely replaceable by columnstore",
+                _ => ix.Note
+            };
 
             t.Indexes.Add(ix);
         }
@@ -160,7 +168,7 @@ public sealed class Analyzer
     public void AnalyzeColumnCardinality(TableInfo t)
     {
         var analyzable = t.Columns
-            .Where(c => !c.IsComputed && !c.IsLob)
+            .Where(c => c is { IsComputed: false, IsLob: false })
             .ToList();
 
         foreach (var c in t.Columns.Where(c => c.IsComputed))
@@ -174,7 +182,7 @@ public sealed class Analyzer
         string fromClause;
         if (t.RowCount > _opt.SampleTargetRows * 2)
         {
-            double pct = Math.Max(0.1, Math.Min(100.0,
+            var pct = Math.Max(0.1, Math.Min(100.0,
                 100.0 * _opt.SampleTargetRows / t.RowCount));
             fromClause = $"FROM {Escape(t.SchemaName)}.{Escape(t.TableName)} " +
                          $"TABLESAMPLE SYSTEM ({pct.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)} PERCENT) REPEATABLE (424242)";
@@ -193,37 +201,39 @@ public sealed class Analyzer
             var select = new System.Text.StringBuilder();
             select.Append("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\n");
             select.Append("SELECT COUNT_BIG(*) AS __rows");
-            for (int i = 0; i < batch.Count; i++)
+            for (var i = 0; i < batch.Count; i++)
             {
                 var col = Escape(batch[i].ColumnName);
                 select.Append($",\n  COUNT_BIG(DISTINCT {col}) AS d_{i}");
                 select.Append($",\n  COUNT_BIG({col}) AS nn_{i}");
                 select.Append($",\n  AVG(CAST(DATALENGTH({col}) AS float)) AS len_{i}");
             }
+
             select.Append('\n').Append(fromClause).Append(" OPTION (MAXDOP 2);");
 
-            using var cmd = new SqlCommand(select.ToString(), conn) { CommandTimeout = _opt.QueryTimeoutSeconds };
+            using var cmd = new SqlCommand(select.ToString(), conn);
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
             using var r = cmd.ExecuteReader();
             if (!r.Read()) continue;
 
-            long rows = r.GetInt64(0);
+            var rows = r.GetInt64(0);
             t.SampledRows = rows;
 
-            for (int i = 0; i < batch.Count; i++)
+            for (var i = 0; i < batch.Count; i++)
             {
                 var c = batch[i];
                 c.Analyzed = true;
                 c.SampleRows = rows;
                 c.DistinctValues = r.GetInt64(r.GetOrdinal($"d_{i}"));
-                long nonNull = r.GetInt64(r.GetOrdinal($"nn_{i}"));
+                var nonNull = r.GetInt64(r.GetOrdinal($"nn_{i}"));
                 c.NullCount = rows - nonNull;
-                int lenOrd = r.GetOrdinal($"len_{i}");
+                var lenOrd = r.GetOrdinal($"len_{i}");
                 c.AvgByteLength = r.IsDBNull(lenOrd) ? 0 : r.GetDouble(lenOrd);
             }
         }
 
         // Table-level data-shape aggregates
-        var done = t.Columns.Where(c => c.Analyzed && c.SampleRows > 0).ToList();
+        var done = t.Columns.Where(c => c is { Analyzed: true, SampleRows: > 0 }).ToList();
         if (done.Count > 0)
         {
             t.PctLowCardinalityColumns = 100.0 * done.Count(c => c.DistinctRatio <= 0.01) / done.Count;
@@ -232,6 +242,7 @@ public sealed class Analyzer
             t.MedianDuplicationFactor = factors[factors.Count / 2];
             t.DictionaryPressureColumns = done.Count(c => c.DictionaryPressure);
         }
+
         t.LobColumns = t.Columns.Count(c => c.IsLob);
     }
 
@@ -240,21 +251,24 @@ public sealed class Analyzer
     {
         var all = new List<CachedQuery>();
         using (var conn = Open())
-        using (var cmd = new SqlCommand(Sql.PlanCacheStatements, conn) { CommandTimeout = _opt.QueryTimeoutSeconds })
-        using (var r = cmd.ExecuteReader())
+        using (var cmd = new SqlCommand(Sql.PlanCacheStatements, conn))
         {
-            while (r.Read())
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            using (var r = cmd.ExecuteReader())
             {
-                if (r.IsDBNull(5)) continue;
-                all.Add(new CachedQuery
+                while (r.Read())
                 {
-                    ExecutionCount = r.GetInt64(0),
-                    TotalLogicalReads = r.GetInt64(1),
-                    TotalCpuMs = r.GetDouble(2),
-                    TotalElapsedMs = r.GetDouble(3),
-                    LastExecutionTime = r.GetDateTime(4),
-                    StatementText = r.GetString(5)
-                });
+                    if (r.IsDBNull(5)) continue;
+                    all.Add(new CachedQuery
+                    {
+                        ExecutionCount = r.GetInt64(0),
+                        TotalLogicalReads = r.GetInt64(1),
+                        TotalCpuMs = r.GetDouble(2),
+                        TotalElapsedMs = r.GetDouble(3),
+                        LastExecutionTime = r.GetDateTime(4),
+                        StatementText = r.GetString(5)
+                    });
+                }
             }
         }
 
@@ -262,7 +276,7 @@ public sealed class Analyzer
         {
             var matches = all
                 .Where(q => q.StatementText.Contains(t.TableName, StringComparison.OrdinalIgnoreCase)
-                         && !q.StatementText.Contains("AS __rows", StringComparison.OrdinalIgnoreCase))
+                            && !q.StatementText.Contains("AS __rows", StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(q => q.TotalLogicalReads)
                 .Take(_opt.MaxQueriesPerTable);
             t.ReferencingQueries.AddRange(matches);
@@ -273,7 +287,7 @@ public sealed class Analyzer
 
     private static IEnumerable<List<T>> Chunk<T>(List<T> source, int size)
     {
-        for (int i = 0; i < source.Count; i += size)
+        for (var i = 0; i < source.Count; i += size)
             yield return source.GetRange(i, Math.Min(size, source.Count - i));
     }
 }

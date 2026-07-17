@@ -43,7 +43,8 @@ public static class LlmClient
         if (!endpoint.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
             endpoint += "/v1/chat/completions";
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(opt.LlmTimeoutSeconds) };
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(opt.LlmTimeoutSeconds);
         if (!string.IsNullOrEmpty(opt.LlmApiKey))
             http.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opt.LlmApiKey);

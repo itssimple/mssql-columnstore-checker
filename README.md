@@ -1,5 +1,7 @@
 # ColumnstoreAnalyzer (C#)
 
+:::note This CLI has been mostly written by Claude, with lots of prompts and data and research by me (itssimple)
+
 A .NET 10 console tool you point at any SQL Server database — no schema knowledge needed.
 It discovers the large tables itself, then does what the DMV-only approach can't:
 **it reads the actual data** and measures how repetitive each column is, because
@@ -78,6 +80,7 @@ Console shows a ranked summary; the output folder gets:
 - `3_index_inventory.csv` — every index with size and columns; wide and dead indexes flagged
 - `4_referencing_queries.csv` — cached statements per table, ranked by logical reads
 - `5_analysis.md` — narrative analysis of each table, with punch-list of reclaimable MB
+- `6_llm_analysis.md` — optional second-opinion narrative from a local LLM (if endpoint provided)
 - `full_report.json` — everything, machine-readable
 
 ## Reading the results

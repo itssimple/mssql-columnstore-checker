@@ -28,7 +28,7 @@ public static class Scoring
 
         // ---- 1. DATA SHAPE: repetitiveness (up to 40 pts) --------------------------------
         // % of columns that are low/medium cardinality drives compressibility.
-        double dataShape =
+        var dataShape =
             (t.PctLowCardinalityColumns * 0.25)          // <=1% distinct: up to 25 pts
           + (t.PctMediumCardinalityColumns * 0.15);      // <=10% distinct: up to 15 pts
         score += Math.Min(40, dataShape);
@@ -41,41 +41,89 @@ public static class Scoring
             notes.Add("Data is mostly high-cardinality - compression benefit will be modest");
 
         // ---- 2. SIZE / ROWGROUP potential (up to 15 pts) ---------------------------------
-        double rowgroups = t.PotentialFullRowgroups;
-        if (rowgroups >= 100) score += 15;
-        else if (rowgroups >= 20) score += 12;
-        else if (rowgroups >= 5) score += 8;
-        else if (rowgroups >= 3) score += 4;
-        else notes.Add($"CAUTION: only ~{rowgroups:0.#} potential rowgroups ({t.RowCount:N0} rows) - likely too small to benefit");
+        var rowgroups = t.PotentialFullRowgroups;
+        switch (rowgroups)
+        {
+            case >= 100:
+                score += 15;
+                break;
+            case >= 20:
+                score += 12;
+                break;
+            case >= 5:
+                score += 8;
+                break;
+            case >= 3:
+                score += 4;
+                break;
+            default:
+                notes.Add($"CAUTION: only ~{rowgroups:0.#} potential rowgroups ({t.RowCount:N0} rows) - likely too small to benefit");
+                break;
+        }
 
         // ---- 3. WORKLOAD: scan-heavy access (up to 20 pts) -------------------------------
         score += t.ScanPct * 0.20;
         if (t.ScanPct >= 50) notes.Add("scan-heavy access pattern");
 
-        // ---- 4. NC index bloat - your reclaim thesis (up to 15 pts) ----------------------
-        if (t.NcIndexBloatRatio >= 2.0) score += 15;
-        else if (t.NcIndexBloatRatio >= 1.0) score += 11;
-        else if (t.NcIndexBloatRatio >= 0.5) score += 6;
-        else score += t.NcIndexBloatRatio * 12;
+        score += t.NcIndexBloatRatio switch
+        {
+            // ---- 4. NC index bloat - your reclaim thesis (up to 15 pts) ----------------------
+            >= 2.0 => 15,
+            >= 1.0 => 11,
+            >= 0.5 => 6,
+            _ => t.NcIndexBloatRatio * 12
+        };
         if (t.NcIndexBloatRatio >= 1.0)
             notes.Add($"NC indexes ({t.NonclusteredMb:N0} MB) outweigh base data ({t.BaseDataMb:N0} MB) - big reclaim potential");
 
         // ---- 5. Contention / missing-index pressure (up to 10 pts) -----------------------
-        long lockWait = t.RowLockWaitMs + t.PageLockWaitMs;
-        if (lockWait >= 3_600_000) score += 6;
-        else if (lockWait >= 60_000) score += 4;
-        else if (lockWait > 0) score += 2;
+        var lockWait = t.RowLockWaitMs + t.PageLockWaitMs;
+        switch (lockWait)
+        {
+            case >= 3_600_000:
+                score += 6;
+                break;
+            case >= 60_000:
+                score += 4;
+                break;
+            case > 0:
+                score += 2;
+                break;
+        }
 
-        if (t.MissingIndexSuggestions >= 5) score += 4;
-        else if (t.MissingIndexSuggestions >= 1) score += 2;
+        switch (t.MissingIndexSuggestions)
+        {
+            case >= 5:
+                score += 4;
+                break;
+            case >= 1:
+                score += 2;
+                break;
+        }
 
-        // ---- PENALTIES --------------------------------------------------------------------
-        if (t.WritePct >= 50) { score -= 30; notes.Add("CAUTION: write-heavy - consider nonclustered columnstore instead of clustered"); }
-        else if (t.WritePct >= 25) { score -= 15; notes.Add("write activity is significant - test delta-store behavior"); }
-        else if (t.WritePct >= 10) { score -= 5; }
+        switch (t.WritePct)
+        {
+            // ---- PENALTIES --------------------------------------------------------------------
+            case >= 50:
+                score -= 30; notes.Add("CAUTION: write-heavy - consider nonclustered columnstore instead of clustered");
+                break;
+            case >= 25:
+                score -= 15; notes.Add("write activity is significant - test delta-store behavior");
+                break;
+            case >= 10:
+                score -= 5;
+                break;
+        }
 
-        if (t.UpdateShareOfWritesPct >= 50) { score -= 15; notes.Add("CAUTION: UPDATE-dominated writes fragment columnstore quickly"); }
-        else if (t.UpdateShareOfWritesPct >= 20) { score -= 8; notes.Add("noticeable UPDATE share - plan for index maintenance"); }
+        switch (t.UpdateShareOfWritesPct)
+        {
+            case >= 50:
+                score -= 15; notes.Add("CAUTION: UPDATE-dominated writes fragment columnstore quickly");
+                break;
+            case >= 20:
+                score -= 8; notes.Add("noticeable UPDATE share - plan for index maintenance");
+                break;
+        }
 
         if (t.DictionaryPressureColumns > 0)
         {

@@ -34,34 +34,34 @@ public sealed class AnalyzerOptions
 
 public sealed class TableInfo
 {
-    public int ObjectId { get; set; }
-    public string SchemaName { get; set; } = "";
-    public string TableName { get; set; } = "";
+    public int ObjectId { get; init; }
+    public string SchemaName { get; init; } = "";
+    public string TableName { get; init; } = "";
     public string FullName => $"[{SchemaName}].[{TableName}]";
-    public long RowCount { get; set; }
-    public decimal TotalSizeMb { get; set; }
-    public decimal BaseDataMb { get; set; }
-    public decimal NonclusteredMb { get; set; }
-    public bool HasColumnstore { get; set; }
-    public bool IsReplicated { get; set; }
-    public bool IsCdcTracked { get; set; }
+    public long RowCount { get; init; }
+    public decimal TotalSizeMb { get; init; }
+    public decimal BaseDataMb { get; init; }
+    public decimal NonclusteredMb { get; init; }
+    public bool HasColumnstore { get; init; }
+    public bool IsReplicated { get; init; }
+    public bool IsCdcTracked { get; init; }
 
     // Workload (DMV) profile
-    public long UserSeeks { get; set; }
-    public long UserScans { get; set; }
-    public long UserLookups { get; set; }
-    public long UserUpdates { get; set; }
+    public long UserSeeks { get; init; }
+    public long UserScans { get; init; }
+    public long UserLookups { get; init; }
+    public long UserUpdates { get; init; }
     public long RowLockWaitMs { get; set; }
     public long PageLockWaitMs { get; set; }
     public long PageIoLatchWaitMs { get; set; }
     public long LeafInserts { get; set; }
     public long LeafUpdates { get; set; }
     public long LeafDeletes { get; set; }
-    public int MissingIndexSuggestions { get; set; }
+    public int MissingIndexSuggestions { get; init; }
 
-    public List<ColumnStat> Columns { get; } = new();
-    public List<IndexInfo> Indexes { get; } = new();
-    public List<CachedQuery> ReferencingQueries { get; } = new();
+    public List<ColumnStat> Columns { get; } = [];
+    public List<IndexInfo> Indexes { get; } = [];
+    public List<CachedQuery> ReferencingQueries { get; } = [];
 
     // Derived
     public double ScanPct
@@ -110,11 +110,11 @@ public sealed class TableInfo
 
 public sealed class ColumnStat
 {
-    public string ColumnName { get; set; } = "";
-    public string DataType { get; set; } = "";
-    public short MaxLength { get; set; }
-    public bool IsLob { get; set; }
-    public bool IsComputed { get; set; }
+    public string ColumnName { get; init; } = "";
+    public string DataType { get; init; } = "";
+    public short MaxLength { get; init; }
+    public bool IsLob { get; init; }
+    public bool IsComputed { get; init; }
     public bool Analyzed { get; set; }
     public string SkipReason { get; set; } = "";
 
@@ -158,37 +158,43 @@ public sealed class ColumnStat
         get
         {
             if (!Analyzed) return SkipReason;
-            if (DuplicationFactor >= 100) return "EXCELLENT - highly repetitive, compresses extremely well";
-            if (DuplicationFactor >= 10) return "GOOD - solid run-length/dictionary compression expected";
+            switch (DuplicationFactor)
+            {
+                case >= 100:
+                    return "EXCELLENT - highly repetitive, compresses extremely well";
+                case >= 10:
+                    return "GOOD - solid run-length/dictionary compression expected";
+            }
+
             if (DictionaryPressure) return "BAD - high-cardinality wide string, dictionary pressure risk";
-            if (DistinctRatio > 0.9) return "POOR - nearly unique values, little compression benefit";
-            return "NEUTRAL";
+            
+            return DistinctRatio > 0.9 ? "POOR - nearly unique values, little compression benefit" : "NEUTRAL";
         }
     }
 }
 
 public sealed class IndexInfo
 {
-    public string IndexName { get; set; } = "";
-    public string TypeDesc { get; set; } = "";
-    public decimal SizeMb { get; set; }
-    public int KeyColumnCount { get; set; }
-    public int IncludedColumnCount { get; set; }
-    public string KeyColumns { get; set; } = "";
-    public string IncludedColumns { get; set; } = "";
-    public long UserSeeks { get; set; }
-    public long UserScans { get; set; }
-    public long UserLookups { get; set; }
-    public long UserUpdates { get; set; }
+    public string IndexName { get; init; } = "";
+    public string TypeDesc { get; init; } = "";
+    public decimal SizeMb { get; init; }
+    public int KeyColumnCount { get; init; }
+    public int IncludedColumnCount { get; init; }
+    public string KeyColumns { get; init; } = "";
+    public string IncludedColumns { get; init; } = "";
+    public long UserSeeks { get; init; }
+    public long UserScans { get; init; }
+    public long UserLookups { get; init; }
+    public long UserUpdates { get; init; }
     public string Note { get; set; } = "";
 }
 
 public sealed class CachedQuery
 {
-    public long ExecutionCount { get; set; }
-    public long TotalLogicalReads { get; set; }
-    public double TotalCpuMs { get; set; }
-    public double TotalElapsedMs { get; set; }
-    public DateTime LastExecutionTime { get; set; }
-    public string StatementText { get; set; } = "";
+    public long ExecutionCount { get; init; }
+    public long TotalLogicalReads { get; init; }
+    public double TotalCpuMs { get; init; }
+    public double TotalElapsedMs { get; init; }
+    public DateTime LastExecutionTime { get; init; }
+    public string StatementText { get; init; } = "";
 }
