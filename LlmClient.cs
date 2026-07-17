@@ -123,7 +123,7 @@ public static class LlmClient
                     execs = q.ExecutionCount,
                     reads = q.TotalLogicalReads,
                     cpuMs = Math.Round(q.TotalCpuMs),
-                    text = Truncate(q.StatementText, 3000)
+                    text = q.StatementText
                 })
         });
 
