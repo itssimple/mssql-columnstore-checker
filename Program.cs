@@ -30,6 +30,12 @@ public static class Program
 
     private static void Run(AnalyzerOptions opt)
     {
+        if (opt.PermissionsReport)
+        {
+            RunPermissionsReport(opt);
+            return;
+        }
+
         var analyzer = new Analyzer(opt);
 
         Console.WriteLine($"Connecting to {opt.Server} / {opt.Database} ...");
@@ -146,6 +152,26 @@ public static class Program
         }
     }
 
+    /// <summary>Standalone mode - runs instead of (not alongside) the columnstore pipeline. Needs
+    /// broad read access across every database on the instance (see --help), so a normal
+    /// least-privilege login usually won't see the full picture.</summary>
+    private static void RunPermissionsReport(AnalyzerOptions opt)
+    {
+        Console.WriteLine($"Connecting to {opt.Server} for a permissions inventory (--permissions-report) ...");
+        Console.WriteLine("(this needs broad read access across every database on the instance - see --help)");
+        Console.WriteLine();
+
+        var result = PermissionsReportRunner.Run(opt);
+
+        PermissionsReportWriter.WriteAll(opt, result);
+        File.WriteAllText(Path.Combine(opt.OutputFolder, "permissions_analysis.md"), PermissionsNarrative.Build(opt, result));
+        if (opt.WriteHtmlReport)
+            PermissionsHtmlWriter.Write(Path.Combine(opt.OutputFolder, "permissions_report.html"), opt, result);
+
+        Console.WriteLine();
+        Console.WriteLine($"Permissions report written to: {opt.OutputFolder}");
+    }
+
     private static AnalyzerOptions ParseArgs(string[] args)
     {
         var opt = new AnalyzerOptions();
@@ -187,6 +213,7 @@ public static class Program
                 case "--health-check-all-databases": opt.HealthCheckAllDatabases = true; break;
                 case "--install-missing-tools": opt.InstallMissingTools = true; break;
                 case "--no-html-report": opt.WriteHtmlReport = false; break;
+                case "--permissions-report": opt.PermissionsReport = true; break;
                 case "--help":
                 case "-h":
                     PrintUsage();
@@ -203,7 +230,8 @@ public static class Program
         }
 
         if (string.IsNullOrWhiteSpace(opt.Server)) throw new ArgumentException("--server is required");
-        if (string.IsNullOrWhiteSpace(opt.Database)) throw new ArgumentException("--database is required");
+        if (string.IsNullOrWhiteSpace(opt.Database) && !opt.PermissionsReport)
+            throw new ArgumentException("--database is required (unless --permissions-report is set, which scans every database)");
 
         // SQL auth with no password on the command line: get it safely.
         if (!string.IsNullOrEmpty(opt.User) && string.IsNullOrEmpty(opt.Password))
@@ -285,8 +313,31 @@ public static class Program
                                                        Aborts safely if run non-interactively (can't confirm).
                             --no-html-report    Skip writing the self-contained report.html dashboard
 
+                          Permissions inventory (optional, standalone - runs INSTEAD of the columnstore
+                          analysis, not alongside it):
+                            --permissions-report  Instance-wide logins/permissions security checkup. Scans
+                                                    EVERY online database, not just one - --database is not
+                                                    required and is ignored if given. Reports: every server
+                                                    login (disabled state, server roles), every database
+                                                    user across every database (login mapping, database
+                                                    roles, orphaned detection), every explicit database/
+                                                    schema/object-level GRANT or DENY, and flags disabled
+                                                    logins that still have live database access, orphaned
+                                                    users, and risky grants (CONTROL/ALTER/TAKE OWNERSHIP,
+                                                    or anything granted to 'public'). Needs enough read
+                                                    access to see EVERY database's principals/permissions -
+                                                    in practice this means sysadmin, or securityadmin plus
+                                                    VIEW DEFINITION in every database; a normal
+                                                    least-privilege login will only see a partial picture
+                                                    (skipped databases are reported as warnings, not fatal
+                                                    errors). Writes permissions_server_principals.csv,
+                                                    permissions_database_users.csv,
+                                                    permissions_object_grants.csv, permissions_report.json,
+                                                    permissions_analysis.md, and (unless --no-html-report)
+                                                    permissions_report.html - all in --output.
+
                           Requires VIEW SERVER STATE + read access on the target database.
-                          (--health-check widens this - see above.)
+                          (--health-check widens this; --permissions-report replaces it entirely - see above.)
                           """);
     }
 }

@@ -104,6 +104,12 @@ Permissions: `VIEW SERVER STATE` + read access to the database.
 | `--health-check-all-databases` | off (connected DB only) | Widen backup-recency/CHECKDB-age/config checks and finding filtering to every database on the instance |
 | `--install-missing-tools` | off | **Opt-in escalation.** If FRK/Ola Hallengren are missing, offer to download (pinned version, SHA-256 verified), confirm interactively, and install them. Grants this run `CREATE PROCEDURE` (usually in `master`) and SQL Agent job creation rights - never on by default, aborts safely if run non-interactively |
 
+**Permissions inventory** (standalone - see "Permissions inventory (optional, new)" below)
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--permissions-report` | off | Runs a logins/permissions security checkup across **every** database on the instance, instead of the columnstore analysis (not alongside it). `--database` is not required and is ignored when this is set |
+
 ## Output
 
 Console shows a ranked summary; the output folder gets:
@@ -258,3 +264,50 @@ and running code from the internet against SQL Server — "that's how supply cha
 happen." This feature exists because it was explicitly requested, but the pinning + checksum +
 confirmation model above is there specifically to close off that exact risk. When in doubt,
 skip this flag and install FRK/Ola Hallengren yourself from the linked projects above.
+
+## Permissions inventory (optional, new)
+
+A standalone security checkup for sysadmins who need to keep an inventory of who has access to
+what across an entire SQL Server instance. Unlike everything else in this tool, `--permissions-report`
+runs **instead of** the columnstore analysis, not alongside it — `--database` is not required
+(and is ignored if given), because the whole point is scanning *every* database, not one.
+
+```bash
+dotnet run -- --server SQLPROD01 --permissions-report
+```
+
+**What it reports:**
+
+- Every server-level login: disabled state, server role memberships (sysadmin, securityadmin, etc.).
+- Every database user in every online user database on the instance: which login it maps to,
+  which database roles it's in, and whether it's **orphaned** (a SQL-authenticated user with no
+  matching server login — usually left behind after a login was dropped or the database was
+  restored elsewhere; contained-database users are correctly excluded from this check, since
+  they're login-less by design).
+- Every **explicit** database/schema/object-level `GRANT`/`DENY` (fixed database roles' built-in
+  permissions are implicit and never show up here, so this is naturally just the custom, audit-worthy
+  grants — no extra filtering needed to cut noise).
+
+**Flagged automatically:**
+
+- Disabled logins that **still have live database access** — the login is disabled at the server
+  level, but a database user still maps to it in one or more databases. This is the single
+  biggest "account lingering after someone left" signal.
+- Orphaned database users, listed per database.
+- Risky explicit grants: `CONTROL`/`ALTER`/`TAKE OWNERSHIP` on an object, or anything granted
+  directly to the `public` role (which applies to every user in the database).
+
+**Output** (all in `--output`, same folder as everything else): `permissions_server_principals.csv`,
+`permissions_database_users.csv`, `permissions_object_grants.csv` (the full, unfiltered detail),
+`permissions_report.json` (everything, machine-readable), `permissions_analysis.md` (exec-level
+summary — counts, flagged findings, a per-database table; not a full row dump, that's what the
+CSVs/JSON are for), and `permissions_report.html` (self-contained dashboard, `--no-html-report`
+to skip).
+
+### Permissions required (read this before running)
+
+This needs enough read access to see **every** database's principals and permissions — in
+practice that means `sysadmin`, or `securityadmin` plus `VIEW DEFINITION` in every database. A
+normal least-privilege login will only see a partial picture. Databases the connecting login
+can't see into are skipped with a warning, not a fatal error — the report still writes with
+whatever it could reach, and lists what it couldn't in a Warnings section.

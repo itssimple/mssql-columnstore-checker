@@ -46,6 +46,10 @@ public sealed class AnalyzerOptions
     /// <summary>Opt-in escalation: allows CREATE PROCEDURE/agent job creation for missing FRK/Ola components. Never on by default.</summary>
     public bool InstallMissingTools { get; set; }
     public bool WriteHtmlReport { get; set; } = true;
+
+    /// <summary>Standalone mode: instance-wide logins/permissions inventory across every database.
+    /// Runs instead of (not alongside) the columnstore pipeline - --database is not required.</summary>
+    public bool PermissionsReport { get; set; }
 }
 
 public enum HealthCheckSeverity { Info, Low, Medium, High, Critical }
@@ -101,6 +105,62 @@ public sealed class InstallAction
     public DateTime When { get; init; }
     public bool Succeeded { get; init; }
     public string Detail { get; init; } = "";
+}
+
+// ==========================================================================================
+// --permissions-report: standalone instance-wide logins/permissions inventory
+// ==========================================================================================
+
+public sealed class ServerPrincipalInfo
+{
+    public string Name { get; init; } = "";
+    public string TypeDesc { get; init; } = "";   // SQL_LOGIN, WINDOWS_LOGIN, WINDOWS_GROUP
+    public bool IsDisabled { get; init; }
+    public DateTime CreateDate { get; init; }
+    public string? DefaultDatabaseName { get; init; }
+    public List<string> ServerRoles { get; init; } = [];
+
+    /// <summary>How many database users (across every database scanned) map to this login - the
+    /// "is this disabled login actually still lingering with live access" signal.</summary>
+    public int DatabaseUserCount { get; set; }
+}
+
+public sealed class DatabaseUserInfo
+{
+    public string DatabaseName { get; init; } = "";
+    public string UserName { get; init; } = "";
+    public string TypeDesc { get; init; } = "";   // SQL_USER, WINDOWS_USER, WINDOWS_GROUP
+    public string? LoginName { get; init; }       // null if orphaned or a login-less contained-DB user
+    public bool IsOrphaned { get; init; }
+    public List<string> DatabaseRoles { get; init; } = [];
+}
+
+/// <summary>One explicit (not fixed-role-implicit) GRANT/DENY at database, schema, or object scope.</summary>
+public sealed class ObjectPermissionInfo
+{
+    public string DatabaseName { get; init; } = "";
+    public string GranteeName { get; init; } = "";
+    public string GranteeType { get; init; } = ""; // e.g. SQL_USER, DATABASE_ROLE, APPLICATION_ROLE
+    public string ClassDesc { get; init; } = "";   // DATABASE, OBJECT_OR_COLUMN, SCHEMA
+    public string PermissionName { get; init; } = "";
+    public string StateDesc { get; init; } = "";   // GRANT, DENY, GRANT_WITH_GRANT_OPTION
+    public string? SchemaName { get; init; }
+    public string? ObjectName { get; init; }
+}
+
+public sealed class PermissionsReportResult
+{
+    public string ServerName { get; init; } = "";
+    public DateTime GeneratedAt { get; init; }
+    public List<ServerPrincipalInfo> ServerPrincipals { get; } = [];
+    public List<DatabaseUserInfo> DatabaseUsers { get; } = [];
+    public List<ObjectPermissionInfo> ObjectPermissions { get; } = [];
+    /// <summary>Computed risk findings (sysadmin inventory, disabled-but-still-mapped logins, orphaned
+    /// users, risky object grants) - reuses HealthCheckFinding/HealthCheckSeverity rather than a
+    /// parallel type, since the shape (Source/Category/Severity/Title/Details/DatabaseName) already fits.</summary>
+    public List<HealthCheckFinding> Findings { get; } = [];
+    /// <summary>Databases skipped due to errors (typically insufficient permission) - non-fatal by design.</summary>
+    public List<string> Warnings { get; } = [];
 }
 
 public sealed class HealthCheckResult
