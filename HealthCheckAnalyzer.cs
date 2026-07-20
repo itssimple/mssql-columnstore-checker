@@ -747,8 +747,8 @@ public sealed class HealthCheckAnalyzer
             ActualStateDesc = r.GetString(0),
             DesiredStateDesc = r.GetString(1),
             ReadonlyReason = r.GetInt32(2),
-            CurrentStorageSizeMb = r.GetDecimal(3),
-            MaxStorageSizeMb = r.GetDecimal(4),
+            CurrentStorageSizeMb = r.GetInt64(3),
+            MaxStorageSizeMb = r.GetInt64(4),
             QueryCaptureModeDesc = r.GetString(5)
         };
     }
