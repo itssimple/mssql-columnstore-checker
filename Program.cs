@@ -41,6 +41,21 @@ public static class Program
         if (major < 13)
             Console.WriteLine("WARNING: pre-2016 SQL Server - columnstore feature set is limited on this version.");
 
+        HealthCheckResult? health = null;
+        if (opt.RunHealthCheck)
+        {
+            Console.WriteLine("\nRunning health check (First Responder Kit / Ola Hallengren / native checks) ...");
+            Console.WriteLine("(needs master + msdb read, and EXEC on any installed FRK procs - see --help)");
+            try
+            {
+                health = HealthCheckRunner.Run(opt);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Health check stage failed entirely (non-fatal): " + ex.Message);
+            }
+        }
+
         Console.WriteLine(
             $"\nDiscovering tables (>= {opt.MinRowCount:N0} rows OR >= {opt.MinTableSizeMb:N0} MB, top {opt.TopNCandidates}) ...");
         var tables = analyzer.DiscoverTables();
@@ -102,7 +117,9 @@ public static class Program
         foreach (var t in tables)
             Scoring.Score(t);
 
-        ReportWriter.WriteAll(opt, tables);
+        ReportWriter.WriteAll(opt, tables, health);
+        if (opt.WriteHtmlReport)
+            HtmlReportWriter.Write(Path.Combine(opt.OutputFolder, "report.html"), opt, tables, health);
 
         // Rule-based narrative (no AI needed)
         var narrative = Narrative.Build(opt, tables);
@@ -159,6 +176,17 @@ public static class Program
                 case "--llm-model": opt.LlmModel = Next(); break;
                 case "--llm-key": opt.LlmApiKey = Next(); break;
                 case "--llm-timeout": opt.LlmTimeoutSeconds = int.Parse(Next()); break;
+                case "--health-check": opt.RunHealthCheck = true; break;
+                case "--skip-frk": opt.SkipFrk = true; break;
+                case "--skip-ola": opt.SkipOla = true; break;
+                case "--skip-whoisactive": opt.SkipWhoIsActive = true; break;
+                case "--include-blitzlock": opt.IncludeBlitzLock = true; break;
+                case "--include-blitzbackups": opt.IncludeBlitzBackups = true; break;
+                case "--tools-database": opt.ToolsDatabase = Next(); break;
+                case "--blitzfirst-seconds": opt.BlitzFirstSampleSeconds = int.Parse(Next()); break;
+                case "--health-check-all-databases": opt.HealthCheckAllDatabases = true; break;
+                case "--install-missing-tools": opt.InstallMissingTools = true; break;
+                case "--no-html-report": opt.WriteHtmlReport = false; break;
                 case "--help":
                 case "-h":
                     PrintUsage();
@@ -224,7 +252,41 @@ public static class Program
                             --llm-key KEY       Bearer token, if the endpoint needs one
                             --llm-timeout N     LLM request timeout in seconds (default 300)
 
+                          Health check (optional, off by default - PERMISSION DELTA, read carefully):
+                            --health-check      Run First Responder Kit / Ola Hallengren / native diagnostic checks
+                                                  alongside the columnstore analysis. sp_BlitzIndex/sp_BlitzCache/
+                                                  sp_BlitzLock are scoped to --database via @DatabaseName, and
+                                                  sp_BlitzFirst's plan-cache portion via @FilterPlansByDatabase, so
+                                                  you don't get noise from unrelated databases on the instance.
+                                                  sp_Blitz and sp_BlitzBackups have no such parameter upstream and
+                                                  stay instance-wide by design. Needs read access to master (tool
+                                                  detection) and msdb (Ola Hallengren jobs, backup history, agent
+                                                  job failures), plus EXEC rights on any FRK procs already installed
+                                                  - beyond the base VIEW SERVER STATE + db-read this tool otherwise
+                                                  needs. Never runs sp_WhoIsActive (detection only - it's a
+                                                  live-snapshot tool, meaningless in a static report).
+                            --skip-frk          Don't detect/run sp_Blitz family procs
+                            --skip-ola          Don't detect Ola Hallengren maintenance jobs
+                            --skip-whoisactive  Don't detect sp_WhoIsActive
+                            --include-blitzlock    Also run sp_BlitzLock if installed (deadlock analysis)
+                            --include-blitzbackups Also run sp_BlitzBackups if installed (overlaps native backup checks)
+                            --tools-database NAME  Database FRK/sp_WhoIsActive are installed in (default: master)
+                            --blitzfirst-seconds N sp_BlitzFirst always runs a fast instant snapshot; this ALSO
+                                                    captures a supplementary live @Seconds= sample (default 30,
+                                                    adding that many seconds of real wall-clock time - the one
+                                                    place in this stage that does so by default). 0 skips the
+                                                    extra sample and keeps the run to the instant snapshot only.
+                            --health-check-all-databases  Widen backup-recency/CHECKDB-age checks to every database,
+                                                            not just the connected one
+                            --install-missing-tools  DANGEROUS, opt-in: if FRK/Ola Hallengren are missing, offer to
+                                                       download (pinned version, SHA-256 verified), confirm interactively,
+                                                       and install them - grants this run CREATE PROCEDURE (usually in
+                                                       master) and SQL Agent job creation rights. Never on by default.
+                                                       Aborts safely if run non-interactively (can't confirm).
+                            --no-html-report    Skip writing the self-contained report.html dashboard
+
                           Requires VIEW SERVER STATE + read access on the target database.
+                          (--health-check widens this - see above.)
                           """);
     }
 }

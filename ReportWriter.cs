@@ -5,7 +5,7 @@ namespace ColumnstoreAnalyzer;
 
 public static class ReportWriter
 {
-    public static void WriteAll(AnalyzerOptions opt, List<TableInfo> tables)
+    public static void WriteAll(AnalyzerOptions opt, List<TableInfo> tables, HealthCheckResult? health = null)
     {
         Directory.CreateDirectory(opt.OutputFolder);
 
@@ -14,6 +14,12 @@ public static class ReportWriter
         WriteIndexesCsv(Path.Combine(opt.OutputFolder, "3_index_inventory.csv"), tables);
         WriteQueriesCsv(Path.Combine(opt.OutputFolder, "4_referencing_queries.csv"), tables);
         WriteJson(Path.Combine(opt.OutputFolder, "full_report.json"), tables);
+
+        if (health != null)
+        {
+            WriteHealthFindingsCsv(Path.Combine(opt.OutputFolder, "7_health_check_findings.csv"), health);
+            WriteHealthJson(Path.Combine(opt.OutputFolder, "health_check.json"), health);
+        }
 
         WriteConsoleSummary(tables);
         Console.WriteLine();
@@ -114,6 +120,27 @@ public static class ReportWriter
         var json = JsonSerializer.Serialize(
             tables.OrderByDescending(t => t.CandidacyScore),
             new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(path, json, Encoding.UTF8);
+    }
+
+    private static void WriteHealthFindingsCsv(string path, HealthCheckResult health)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("source,category,severity,database,object,title,details,recommendation,needs_annotation");
+        foreach (var f in health.Findings.OrderByDescending(f => f.Severity))
+        {
+            sb.AppendLine(string.Join(",",
+                Csv(f.Source), Csv(f.Category), Csv(f.Severity.ToString()), Csv(f.DatabaseName), Csv(f.ObjectName),
+                Csv(f.Title), Csv(f.Details), Csv(f.Recommendation), f.NeedsAnnotation));
+        }
+        File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+    }
+
+    /// <summary>Kept as its own file (not folded into full_report.json) so that file's existing schema/contract
+    /// stays byte-for-byte unchanged for anyone already parsing it.</summary>
+    private static void WriteHealthJson(string path, HealthCheckResult health)
+    {
+        var json = JsonSerializer.Serialize(health, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(path, json, Encoding.UTF8);
     }
 

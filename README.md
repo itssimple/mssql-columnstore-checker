@@ -82,6 +82,9 @@ Console shows a ranked summary; the output folder gets:
 - `5_analysis.md` — narrative analysis of each table, with punch-list of reclaimable MB
 - `6_llm_analysis.md` — optional second-opinion narrative from a local LLM (if endpoint provided)
 - `full_report.json` — everything, machine-readable
+- `7_health_check_findings.csv` / `health_check.json` — only written with `--health-check` (see below)
+- `report.html` — self-contained dashboard (columnstore + health-check findings together); written by
+  default, `--no-html-report` to skip
 
 ## Reading the results
 
@@ -135,3 +138,86 @@ The tool sends a compact JSON summary (table stats, column cardinality, indexes,
 plus the rule-based findings as grounding. If the endpoint fails, the
 rule-based analysis still stands — the LLM is strictly additive. Note that query text is sent
 to the endpoint, so keep it to servers you control if statements may contain sensitive literals.
+
+## Health check (optional, new)
+
+Beyond columnstore candidacy, `--health-check` runs a much broader "is this environment okay"
+pass, folding in well-known community diagnostic tooling plus a set of native checks. Off by
+default and fully additive — nothing here changes default behavior or output.
+
+```bash
+dotnet run -- --server SQLPROD01 --database SalesDW --health-check
+```
+
+**Community tools it detects (and runs, if already installed):**
+
+- [Brent Ozar's First Responder Kit](https://github.com/BrentOzarULTD/SQL-Server-First-Responder-Kit)
+  (MIT licensed) — `sp_Blitz` (overall health), `sp_BlitzIndex` (index health), `sp_BlitzCache`
+  (top resource-consuming cached plans), `sp_BlitzFirst` (wait stats/perfmon snapshot). Where the
+  upstream proc supports it, results are scoped to `--database` (`sp_BlitzIndex`/`sp_BlitzCache`/
+  `sp_BlitzLock` via `@DatabaseName`, `sp_BlitzFirst`'s plan-cache portion via
+  `@FilterPlansByDatabase`) so you don't get a pile of unrelated-database noise; `sp_Blitz` and
+  `sp_BlitzBackups` have no such parameter upstream and stay instance-wide by design.
+  `sp_BlitzFirst` always runs a fast instant snapshot and, by default, *also* captures a
+  supplementary 30-second live sample (`--blitzfirst-seconds N` to change the duration, `0` to
+  skip it) — the one place in this stage that adds real wall-clock time by default. `sp_BlitzLock`/
+  `sp_BlitzBackups` are available via `--include-blitzlock`/`--include-blitzbackups`.
+- [Ola Hallengren's Maintenance Solution](https://ola.hallengren.com/) — detects the
+  `DatabaseBackup`/`DatabaseIntegrityCheck`/`IndexOptimize` SQL Agent jobs and reports
+  enabled/disabled state, last-run outcome, and next scheduled run. Detection only, no EXEC needed.
+- [sp_WhoIsActive](https://github.com/amachanic/sp_whoisactive) (Adam Machanic, GPLv3) —
+  **presence/version detection only, never executed.** It's a live-snapshot-of-right-now tool;
+  running it inside a batch report would produce one meaningless point-in-time reading.
+
+If a tool isn't installed, the report says so and links to the upstream project. It does **not**
+silently skip the finding.
+
+**Native checks** (zero external dependency, same read-only pattern as the rest of the tool):
+top wait stats, last known-good `CHECKDB` per database, backup recency (including a "FULL
+recovery model with no recent log backup" gap flag — a silent point-in-time-recovery hole),
+tempdb file count/config, common `sp_configure`/database-flag smells (MAXDOP, cost threshold
+for parallelism, max server memory, auto-shrink/auto-close), and recent Agent job failures.
+
+**"Leave with a good conscience" inventory** — the parts of this aimed specifically at
+knowledge transfer, not just diagnostics:
+
+- **Job ownership audit** — flags SQL Agent jobs owned by what looks like a personal login
+  rather than a service account. This is the single biggest landmine for a departing
+  employee: if that login gets disabled, every job it owns can silently start failing.
+- **Security/access inventory** — sysadmin members, disabled-but-still-present logins,
+  orphaned database users, and linked servers (with a prompt: "what depends on this, and is
+  it still needed?").
+- **Topology rollup** — replication/CDC/Availability Group participation, server-wide.
+- **"Fill in before you go"** — a printable list of every finding flagged as needing the
+  departing owner's own knowledge (unexplained linked servers, personally-owned jobs), with
+  blank lines for handwritten answers.
+- A plain-English glossary appendix in `report.html`, so a non-DBA manager can actually read it.
+
+### Permissions (read this before enabling)
+
+The base tool needs `VIEW SERVER STATE` + database read. `--health-check` adds: read access to
+`master` (tool detection) and `msdb` (Ola Hallengren jobs, backup history, job failures), plus
+EXEC rights on whatever FRK procs are already installed. Every check is independently
+non-fatal — if a permission is missing, that one check reports "insufficient permission,
+skipping" and the run continues.
+
+### Auto-install (opt-in, off by default, reads this carefully)
+
+`--install-missing-tools` (only takes effect combined with `--health-check`) offers to install
+whichever of FRK / Ola Hallengren's solution are missing. This is the one feature that changes
+the tool's read-only posture — it needs `CREATE PROCEDURE` (typically in `master`) and SQL
+Agent job creation rights. Safety rails, all mandatory, none skippable:
+
+1. The exact component, target database, and pinned version are printed before anything happens.
+2. Requires typing `YES` at an interactive prompt — refuses to proceed if input is piped/redirected.
+3. The script is downloaded from a **pinned URL/version** (never "latest") and its SHA-256 is
+   verified against a checksum baked into `InstallSources.cs` before anything is executed. A
+   mismatch aborts with no changes made.
+4. Every install attempt (confirmed, skipped, succeeded, or failed) is recorded in
+   `health_check.json` and `report.html` as an audit trail.
+
+Brent Ozar's own 2026 First Responder Kit release notes explicitly warn against auto-fetching
+and running code from the internet against SQL Server — "that's how supply chain attacks
+happen." This feature exists because it was explicitly requested, but the pinning + checksum +
+confirmation model above is there specifically to close off that exact risk. When in doubt,
+skip this flag and install FRK/Ola Hallengren yourself from the linked projects above.

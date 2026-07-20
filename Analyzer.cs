@@ -5,38 +5,13 @@ namespace ColumnstoreAnalyzer;
 public sealed class Analyzer
 {
     private readonly AnalyzerOptions _opt;
-    private readonly string _connectionString;
 
     public Analyzer(AnalyzerOptions opt)
     {
         _opt = opt;
-        var b = new SqlConnectionStringBuilder
-        {
-            DataSource = opt.Server,
-            InitialCatalog = opt.Database,
-            TrustServerCertificate = opt.TrustServerCertificate,
-            ApplicationName = "ColumnstoreAnalyzer",
-            ConnectTimeout = 30
-        };
-        if (!string.IsNullOrEmpty(opt.User))
-        {
-            b.UserID = opt.User;
-            b.Password = opt.Password ?? "";
-        }
-        else
-        {
-            b.IntegratedSecurity = true;
-        }
-
-        _connectionString = b.ConnectionString;
     }
 
-    private SqlConnection Open()
-    {
-        var conn = new SqlConnection(_connectionString);
-        conn.Open();
-        return conn;
-    }
+    private SqlConnection Open() => ConnectionFactory.Open(_opt);
 
     public (int majorVersion, DateTime startTime, int uptimeDays) GetServerInfo()
     {
@@ -283,7 +258,7 @@ public sealed class Analyzer
         }
     }
 
-    private static string Escape(string identifier) => "[" + identifier.Replace("]", "]]") + "]";
+    internal static string Escape(string identifier) => "[" + identifier.Replace("]", "]]") + "]";
 
     private static IEnumerable<List<T>> Chunk<T>(List<T> source, int size)
     {

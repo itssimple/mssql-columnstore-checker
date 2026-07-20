@@ -30,6 +30,86 @@ public sealed class AnalyzerOptions
     public int LlmTimeoutSeconds { get; set; } = 300;
     public string OutputFolder { get; set; } =
         Path.Combine(Environment.CurrentDirectory, $"columnstore_report_{DateTime.Now:yyyyMMdd_HHmmss}");
+
+    // ---- Health check (opt-in; adds master/msdb reads + EXEC on any installed FRK procs) ----
+    public bool RunHealthCheck { get; set; }
+    public bool SkipFrk { get; set; }
+    public bool SkipOla { get; set; }
+    public bool SkipWhoIsActive { get; set; }
+    public bool IncludeBlitzLock { get; set; }
+    public bool IncludeBlitzBackups { get; set; }
+    public string ToolsDatabase { get; set; } = "master";
+    /// <summary>Extra live @Seconds= wait-stat sample captured alongside the always-run instant sp_BlitzFirst
+    /// snapshot. Defaults to 30s (adds that much real wall-clock time to --health-check runs); 0 skips the extra sample.</summary>
+    public int BlitzFirstSampleSeconds { get; set; } = 30;
+    public bool HealthCheckAllDatabases { get; set; }
+    /// <summary>Opt-in escalation: allows CREATE PROCEDURE/agent job creation for missing FRK/Ola components. Never on by default.</summary>
+    public bool InstallMissingTools { get; set; }
+    public bool WriteHtmlReport { get; set; } = true;
+}
+
+public enum HealthCheckSeverity { Info, Low, Medium, High, Critical }
+
+public sealed class HealthCheckFinding
+{
+    public string Source { get; init; } = "";     // "Native", "sp_Blitz", "sp_BlitzIndex", "Ola Hallengren", ...
+    public string Category { get; init; } = "";    // "Backups", "Configuration", "Security", "Maintenance", ...
+    public HealthCheckSeverity Severity { get; init; } = HealthCheckSeverity.Info;
+    public string Title { get; init; } = "";
+    public string Details { get; init; } = "";
+    public string? Recommendation { get; init; }
+    public string? DatabaseName { get; init; }
+    public string? ObjectName { get; init; }
+    public Dictionary<string, string?> RawColumns { get; init; } = [];
+
+    /// <summary>True when this finding is a gap only the departing owner can fill in (exit-interview capture list).</summary>
+    public bool NeedsAnnotation { get; init; }
+    public string? AnswerPlaceholder { get; init; }
+}
+
+public sealed class ComponentStatus
+{
+    public string Name { get; init; } = "";        // "sp_Blitz", "Ola Hallengren Maintenance Solution", "sp_WhoIsActive"
+    public bool Installed { get; init; }
+    public string? Version { get; init; }
+    public string InstallInstructions { get; init; } = "";
+}
+
+public sealed class MaintenanceJobStatus
+{
+    public string JobNamePattern { get; init; } = "";  // e.g. "DatabaseBackup - %"
+    public string? JobName { get; init; }
+    public bool Found { get; init; }
+    public bool Enabled { get; init; }
+    public DateTime? LastRunTime { get; init; }
+    public string? LastRunOutcome { get; init; }       // Succeeded/Failed/Retry/Canceled
+    public DateTime? NextRunTime { get; init; }
+}
+
+/// <summary>Generic capture of an EXEC'd stored proc's result set, whose schema isn't known in advance.</summary>
+public sealed class DynamicResultSet
+{
+    public string Name { get; init; } = "";
+    public List<string> ColumnNames { get; init; } = [];
+    public List<Dictionary<string, object?>> Rows { get; init; } = [];
+}
+
+public sealed class InstallAction
+{
+    public string Component { get; init; } = "";
+    public string PinnedVersion { get; init; } = "";
+    public DateTime When { get; init; }
+    public bool Succeeded { get; init; }
+    public string Detail { get; init; } = "";
+}
+
+public sealed class HealthCheckResult
+{
+    public List<ComponentStatus> Components { get; } = [];
+    public List<MaintenanceJobStatus> MaintenanceJobs { get; } = [];
+    public List<HealthCheckFinding> Findings { get; } = [];
+    public List<DynamicResultSet> RawResultSets { get; } = [];
+    public List<InstallAction> InstallActions { get; } = [];
 }
 
 public sealed class TableInfo
