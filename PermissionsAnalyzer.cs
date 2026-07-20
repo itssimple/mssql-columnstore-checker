@@ -155,6 +155,16 @@ public sealed class PermissionsAnalyzer
                 schemaNames[r.GetInt32(0)] = r.GetString(1);
         }
 
+        var columnNames = new Dictionary<(int ObjectId, int ColumnId), string>();
+        using (var conn = Open())
+        using (var cmd = new SqlCommand(string.Format(SqlPermissions.ColumnNamesFmt, Analyzer.Escape(database)), conn))
+        {
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                columnNames[(r.GetInt32(0), r.GetInt32(1))] = r.GetString(2);
+        }
+
         var perms = new List<ObjectPermissionInfo>();
         using (var conn = Open())
         using (var cmd = new SqlCommand(string.Format(SqlPermissions.DatabasePermissionsFmt, Analyzer.Escape(database)), conn))
@@ -165,12 +175,15 @@ public sealed class PermissionsAnalyzer
             {
                 var classDesc = r.GetString(2);
                 var majorId = r.GetInt32(3);
-                string? schemaName = null, objectName = null;
+                var minorId = r.GetInt32(4);
+                string? schemaName = null, objectName = null, columnName = null;
 
                 if (classDesc == "OBJECT_OR_COLUMN" && objectNames.TryGetValue(majorId, out var obj))
                 {
                     schemaName = obj.Schema;
                     objectName = obj.Name;
+                    if (minorId != 0 && columnNames.TryGetValue((majorId, minorId), out var col))
+                        columnName = col;
                 }
                 else if (classDesc == "SCHEMA" && schemaNames.TryGetValue(majorId, out var sch))
                 {
@@ -183,10 +196,11 @@ public sealed class PermissionsAnalyzer
                     GranteeName = r.GetString(0),
                     GranteeType = r.GetString(1),
                     ClassDesc = classDesc,
-                    PermissionName = r.GetString(4),
-                    StateDesc = r.GetString(5),
+                    PermissionName = r.GetString(5),
+                    StateDesc = r.GetString(6),
                     SchemaName = schemaName,
-                    ObjectName = objectName
+                    ObjectName = objectName,
+                    ColumnName = columnName
                 });
             }
         }

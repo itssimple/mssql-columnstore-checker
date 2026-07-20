@@ -11,7 +11,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Exclude the nested test project's files from this project's own default glob compile. -->
+    <Compile Remove="ColumnstoreAnalyzer.Tests\**\*.cs" />
+    <None Remove="ColumnstoreAnalyzer.Tests\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ColumnstoreAnalyzer.Tests" />
   </ItemGroup>
 
 </Project>

@@ -30,6 +30,12 @@ public static class Program
 
     private static void Run(AnalyzerOptions opt)
     {
+        if (opt.SelfTest)
+        {
+            RunSelfTest(opt);
+            return;
+        }
+
         if (opt.PermissionsReport)
         {
             RunPermissionsReport(opt);
@@ -172,6 +178,27 @@ public static class Program
         Console.WriteLine($"Permissions report written to: {opt.OutputFolder}");
     }
 
+    /// <summary>Standalone, strictly read-only mode - runs instead of every other mode. Exercises
+    /// every code path in the tool against a real instance and writes a pass/fail diagnostic report,
+    /// meant to be run manually (this tool never gets its own live database access) and the result
+    /// handed back for review.</summary>
+    private static void RunSelfTest(AnalyzerOptions opt)
+    {
+        Console.WriteLine("=".PadRight(78, '='));
+        Console.WriteLine("SELF-TEST MODE: strictly read-only. Every step is a SELECT, a read-only DBCC");
+        Console.WriteLine("command, or an EXEC of an already-installed read-only diagnostic proc.");
+        Console.WriteLine("Nothing here creates, modifies, or deletes anything on the instance.");
+        Console.WriteLine("=".PadRight(78, '='));
+        Console.WriteLine($"Connecting to {opt.Server} ...");
+        Console.WriteLine();
+
+        var result = SelfTestRunner.Run(opt);
+        SelfTestWriter.WriteAll(opt, result);
+
+        Console.WriteLine();
+        Console.WriteLine($"Self-test results written to: {opt.OutputFolder}");
+    }
+
     private static AnalyzerOptions ParseArgs(string[] args)
     {
         var opt = new AnalyzerOptions();
@@ -214,6 +241,7 @@ public static class Program
                 case "--install-missing-tools": opt.InstallMissingTools = true; break;
                 case "--no-html-report": opt.WriteHtmlReport = false; break;
                 case "--permissions-report": opt.PermissionsReport = true; break;
+                case "--self-test": opt.SelfTest = true; break;
                 case "--help":
                 case "-h":
                     PrintUsage();
@@ -230,8 +258,10 @@ public static class Program
         }
 
         if (string.IsNullOrWhiteSpace(opt.Server)) throw new ArgumentException("--server is required");
-        if (string.IsNullOrWhiteSpace(opt.Database) && !opt.PermissionsReport)
-            throw new ArgumentException("--database is required (unless --permissions-report is set, which scans every database)");
+        if (string.IsNullOrWhiteSpace(opt.Database) && !opt.PermissionsReport && !opt.SelfTest)
+            throw new ArgumentException("--database is required (unless --permissions-report or --self-test is set, which scan every database)");
+        if (opt.SelfTest && opt.InstallMissingTools)
+            throw new ArgumentException("--self-test is strictly read-only and cannot be combined with --install-missing-tools");
 
         // SQL auth with no password on the command line: get it safely.
         if (!string.IsNullOrEmpty(opt.User) && string.IsNullOrEmpty(opt.Password))
@@ -336,8 +366,24 @@ public static class Program
                                                     permissions_analysis.md, and (unless --no-html-report)
                                                     permissions_report.html - all in --output.
 
+                          Self-test (optional, standalone - runs INSTEAD of every other mode):
+                            --self-test         STRICTLY READ-ONLY diagnostic pass: exercises every code
+                                                  path in this tool (a small sample of columnstore tables,
+                                                  every health-check native check, FRK detection + instant
+                                                  EXEC of whatever's installed, Ola Hallengren detection,
+                                                  and the full permissions inventory) and writes a pass/fail
+                                                  report instead of the normal output. Every step is a
+                                                  SELECT, a read-only DBCC command, or an EXEC of an
+                                                  already-installed read-only diagnostic proc - nothing here
+                                                  ever creates, modifies, or deletes anything, and it never
+                                                  touches the install-flow (refuses to run combined with
+                                                  --install-missing-tools). Meant for someone with real
+                                                  access to a live instance to run manually and hand the
+                                                  resulting self_test_results.json/.md back for review.
+                                                  --database is not required (ignored if given).
+
                           Requires VIEW SERVER STATE + read access on the target database.
-                          (--health-check widens this; --permissions-report replaces it entirely - see above.)
+                          (--health-check widens this; --permissions-report/--self-test replace it entirely - see above.)
                           """);
     }
 }

@@ -55,7 +55,7 @@ public static class PermissionsHtmlWriter
         header { padding: 24px 32px; border-bottom: 1px solid var(--border); }
         header h1 { margin: 0 0 4px; font-size: 1.5rem; }
         header p { margin: 0; color: var(--muted); }
-        main { max-width: 1100px; margin: 0 auto; padding: 24px 32px 64px; }
+        main { max-width: 1600px; margin: 0 auto; padding: 24px 32px 64px; }
         section { margin-bottom: 32px; }
         h2 { font-size: 1.15rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
         .cards { display: flex; flex-wrap: wrap; gap: 16px; }
@@ -159,16 +159,24 @@ public static class PermissionsHtmlWriter
 
             if (grants.Count > 0)
             {
-                sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>Grantee</th><th>Type</th><th>Scope</th><th>Permission</th><th>State</th><th>Object</th></tr></thead><tbody>");
-                foreach (var p in grants.Take(MaxGrantRowsPerDatabase))
+                // Grouped by (grantee, type, scope, permission, state) - a permission granted once per
+                // column (e.g. "public" given SELECT on 40 individual columns of one table) would
+                // otherwise render as 40 near-identical rows. One row per group, with a target count
+                // and a capped list of what it actually applies to; full raw detail stays in the CSV.
+                var grouped = PermissionGrouping.Group(grants).OrderByDescending(g => g.Targets.Count).ToList();
+
+                sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>Grantee</th><th>Type</th><th>Scope</th><th>Permission</th><th>State</th><th>Targets</th></tr></thead><tbody>");
+                foreach (var g in grouped.Take(MaxGrantRowsPerDatabase))
                 {
-                    var target = p.ObjectName != null ? $"{p.SchemaName}.{p.ObjectName}" : p.SchemaName ?? "";
-                    sb.AppendLine($"<tr><td>{H(p.GranteeName)}</td><td>{H(p.GranteeType)}</td><td>{H(p.ClassDesc)}</td>" +
-                                  $"<td>{H(p.PermissionName)}</td><td>{H(p.StateDesc)}</td><td>{H(target)}</td></tr>");
+                    var targetCell = g.Targets.Count <= 5
+                        ? H(string.Join(", ", g.Targets))
+                        : $"{g.Targets.Count} targets: {H(PermissionGrouping.TargetSummary(g.Targets, 5))} (see CSV)";
+                    sb.AppendLine($"<tr><td>{H(g.GranteeName)}</td><td>{H(g.GranteeType)}</td><td>{H(g.ClassDesc)}</td>" +
+                                  $"<td>{H(g.PermissionName)}</td><td>{H(g.StateDesc)}</td><td>{targetCell}</td></tr>");
                 }
                 sb.AppendLine("</tbody></table>");
-                if (grants.Count > MaxGrantRowsPerDatabase)
-                    sb.AppendLine($"<p class=\"muted\">Showing first {MaxGrantRowsPerDatabase} of {grants.Count} grants - see the CSV/JSON output for the full set.</p>");
+                if (grouped.Count > MaxGrantRowsPerDatabase)
+                    sb.AppendLine($"<p class=\"muted\">Showing first {MaxGrantRowsPerDatabase} of {grouped.Count} grant group(s) - see the CSV/JSON output for the full, ungrouped detail ({grants.Count} raw row(s)).</p>");
             }
 
             sb.AppendLine("</details>");

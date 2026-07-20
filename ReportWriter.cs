@@ -144,14 +144,7 @@ public static class ReportWriter
         File.WriteAllText(path, json, Encoding.UTF8);
     }
 
-    private static string Csv(string? s)
-    {
-        s ??= "";
-        s = s.Replace("\r", " ").Replace("\n", " ");
-        if (s.Contains(',') || s.Contains('"'))
-            s = "\"" + s.Replace("\"", "\"\"") + "\"";
-        return s;
-    }
+    private static string Csv(string? s) => CsvUtil.Escape(s);
 
     private static string F(double d, string fmt = "0.##") =>
         d.ToString(fmt, System.Globalization.CultureInfo.InvariantCulture);

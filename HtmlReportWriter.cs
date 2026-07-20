@@ -59,7 +59,7 @@ public static class HtmlReportWriter
         header { padding: 24px 32px; border-bottom: 1px solid var(--border); }
         header h1 { margin: 0 0 4px; font-size: 1.5rem; }
         header p { margin: 0; color: var(--muted); }
-        main { max-width: 1100px; margin: 0 auto; padding: 24px 32px 64px; }
+        main { max-width: 1600px; margin: 0 auto; padding: 24px 32px 64px; }
         section { margin-bottom: 32px; }
         h2 { font-size: 1.15rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
         .cards { display: flex; flex-wrap: wrap; gap: 16px; }
@@ -227,10 +227,52 @@ public static class HtmlReportWriter
         }
 
         AppendFindingsByCategory(sb, health);
+        AppendQueryStoreTopQueries(sb, health);
+        AppendAvailabilityGroupDetail(sb, health);
         AppendRawResultSets(sb, health);
         AppendTribalKnowledgeCapture(sb, health);
         AppendInstallActions(sb, health);
     }
+
+    private static void AppendQueryStoreTopQueries(StringBuilder sb, HealthCheckResult health)
+    {
+        if (health.QueryStoreTopQueries.Count == 0) return;
+
+        sb.AppendLine("<section><h2>Query Store — top queries</h2>");
+        sb.AppendLine("<p class=\"muted\">Persisted, restart-surviving query performance history - unlike the plan-cache scrape/sp_BlitzCache elsewhere in this report.</p>");
+        foreach (var dbGroup in health.QueryStoreTopQueries.GroupBy(q => q.DatabaseName).OrderBy(g => g.Key))
+        {
+            sb.AppendLine("<details>");
+            sb.AppendLine($"<summary>{H(dbGroup.Key)} <span class=\"muted\">({dbGroup.Count()} quer(y/ies))</span></summary>");
+            sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>Executions</th><th>Avg CPU (ms)</th><th>Avg Duration (ms)</th><th>Avg Logical Reads</th><th>Query text</th></tr></thead><tbody>");
+            foreach (var q in dbGroup.OrderByDescending(q => q.AvgCpuTimeMs * q.TotalExecutions))
+                sb.AppendLine($"<tr><td>{q.TotalExecutions:N0}</td><td>{q.AvgCpuTimeMs:N1}</td><td>{q.AvgDurationMs:N1}</td>" +
+                              $"<td>{q.AvgLogicalReads:N0}</td><td><code>{H(Truncate(q.QueryText, 300))}</code></td></tr>");
+            sb.AppendLine("</tbody></table></details>");
+        }
+        sb.AppendLine("</section>");
+    }
+
+    private static void AppendAvailabilityGroupDetail(StringBuilder sb, HealthCheckResult health)
+    {
+        if (health.AvailabilityReplicas.Count == 0) return;
+
+        sb.AppendLine("<section><h2>Availability Group detail</h2>");
+        sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>AG</th><th>Replica</th><th>Role</th><th>Connected</th><th>Sync health</th></tr></thead><tbody>");
+        foreach (var rep in health.AvailabilityReplicas)
+            sb.AppendLine($"<tr><td>{H(rep.AgName)}</td><td>{H(rep.ReplicaServerName)}</td><td>{H(rep.RoleDesc)}</td>" +
+                          $"<td>{H(rep.ConnectedStateDesc)}</td><td>{H(rep.SynchronizationHealthDesc)}</td></tr>");
+        sb.AppendLine("</tbody></table>");
+
+        sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>AG</th><th>Database</th><th>Replica</th><th>Suspended</th><th>Sync state</th><th>Log send queue</th><th>Redo queue</th><th>Lag (s)</th></tr></thead><tbody>");
+        foreach (var db in health.AvailabilityDatabases)
+            sb.AppendLine($"<tr><td>{H(db.AgName)}</td><td>{H(db.DatabaseName)}</td><td>{H(db.ReplicaServerName)}</td>" +
+                          $"<td>{(db.IsSuspended ? "<span class=\"pill\">suspended</span>" : "no")}</td><td>{H(db.SynchronizationStateDesc)}</td>" +
+                          $"<td>{db.LogSendQueueSizeKb:N0} KB</td><td>{db.RedoQueueSizeKb:N0} KB</td><td>{(db.SecondaryLagSeconds != null ? $"{db.SecondaryLagSeconds:N0}" : "-")}</td></tr>");
+        sb.AppendLine("</tbody></table></section>");
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "...";
 
     private static void AppendFindingsByCategory(StringBuilder sb, HealthCheckResult health)
     {

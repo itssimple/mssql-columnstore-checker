@@ -161,4 +161,79 @@ SELECT
     (SELECT COUNT(*) FROM sys.databases WHERE is_published = 1 OR is_subscribed = 1 OR is_distributor = 1) AS replicated_db_count,
     (SELECT COUNT(*) FROM sys.databases WHERE is_cdc_enabled = 1) AS cdc_db_count,
     (SELECT COUNT(*) FROM sys.dm_hadr_availability_replica_states) AS ag_replica_count;";
+
+    // ---- Query Store ({0} = escaped database name) --------------------------------------
+    // Requires VIEW DATABASE PERFORMANCE STATE (SQL 2022+) or VIEW DATABASE STATE (2016-2019).
+
+    /// <summary>One row per database, always present (even if Query Store has never been turned on -
+    /// actual_state_desc is 'OFF' in that case, not a missing row).</summary>
+    public const string QueryStoreStatusFmt = @"
+SELECT actual_state_desc, desired_state_desc, readonly_reason, current_storage_size_mb,
+       max_storage_size_mb, query_capture_mode_desc
+FROM {0}.sys.database_query_store_options;";
+
+    /// <summary>Top resource-consuming queries from Query Store - persisted, restart-surviving history,
+    /// unlike the plan-cache scrape/sp_BlitzCache elsewhere in this tool. avg_cpu_time/avg_duration are
+    /// in MICROSECONDS; avg_logical_io_reads is in 8KB pages (same unit as CachedQuery.TotalLogicalReads
+    /// elsewhere in this tool, via sys.dm_exec_query_stats - both are page counts, no unit mismatch).
+    /// Param: @N = top count.</summary>
+    public const string QueryStoreTopQueriesFmt = @"
+SELECT TOP (@N)
+    qsq.query_id,
+    qsqt.query_sql_text,
+    SUM(rs.count_executions) AS total_executions,
+    AVG(rs.avg_cpu_time) AS avg_cpu_time_us,
+    AVG(rs.avg_duration) AS avg_duration_us,
+    AVG(rs.avg_logical_io_reads) AS avg_logical_io_reads_pages
+FROM {0}.sys.query_store_query qsq
+JOIN {0}.sys.query_store_query_text qsqt ON qsqt.query_text_id = qsq.query_text_id
+JOIN {0}.sys.query_store_plan qsp ON qsp.query_id = qsq.query_id
+JOIN {0}.sys.query_store_runtime_stats rs ON rs.plan_id = qsp.plan_id
+GROUP BY qsq.query_id, qsqt.query_sql_text
+ORDER BY SUM(rs.avg_cpu_time * rs.count_executions) DESC;";
+
+    // ---- Availability Groups / replication ------------------------------------------------
+    // Requires VIEW SERVER PERFORMANCE STATE (SQL 2022+) or VIEW SERVER STATE (2019 and earlier)
+    // for the two dm_hadr_* views. Both return zero rows gracefully (not an error) on an instance
+    // with no Availability Group at all.
+
+    public const string AvailabilityReplicaHealth = @"
+SELECT
+    ag.name AS ag_name,
+    ar.replica_server_name,
+    ars.role_desc,
+    ars.connected_state_desc,
+    ars.synchronization_health_desc
+FROM sys.dm_hadr_availability_replica_states ars
+JOIN sys.availability_replicas ar ON ar.replica_id = ars.replica_id
+JOIN sys.availability_groups ag ON ag.group_id = ars.group_id;";
+
+    /// <summary>Per-database, per-replica sync state - this is the actual lag/queue-depth signal, not
+    /// just a topology count. secondary_lag_seconds (2016+) is simpler/more direct than computing lag
+    /// from LSN timestamps by hand; it's null on the primary (only meaningful for secondaries).</summary>
+    public const string AvailabilityDatabaseHealth = @"
+SELECT
+    ag.name AS ag_name,
+    ar.replica_server_name,
+    DB_NAME(drs.database_id) AS database_name,
+    drs.is_suspended,
+    drs.synchronization_state_desc,
+    drs.log_send_queue_size,
+    drs.redo_queue_size,
+    drs.secondary_lag_seconds
+FROM sys.dm_hadr_database_replica_states drs
+JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id
+JOIN sys.availability_groups ag ON ag.group_id = drs.group_id;";
+
+    /// <summary>Distribution database name(s), if this instance is configured as a distributor for
+    /// (legacy) transactional/snapshot/merge replication - distinct from Availability Groups above.</summary>
+    public const string DistributionDatabases = @"
+SELECT name FROM sys.databases WHERE is_distributor = 1;";
+
+    /// <summary>Recent replication errors from the distributor. {0} = escaped distribution database name.</summary>
+    public const string ReplicationErrorsFmt = @"
+SELECT TOP (50) time, error_text
+FROM {0}.dbo.MSrepl_errors
+WHERE time >= DATEADD(HOUR, -24, SYSDATETIME())
+ORDER BY time DESC;";
 }

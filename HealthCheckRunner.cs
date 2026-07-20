@@ -31,6 +31,16 @@ public static class HealthCheckRunner
         Step("job ownership audit", () => result.Findings.AddRange(hc.RunJobOwnerAudit()));
         Step("security/access inventory", () => result.Findings.AddRange(hc.RunSecurityInventory()));
         Step("topology rollup", () => result.Findings.AddRange(hc.RunTopologyRollup()));
+        Step("Query Store status", () => result.Findings.AddRange(hc.RunQueryStoreStatus()));
+        Step("Query Store top queries", () => result.QueryStoreTopQueries.AddRange(hc.RunQueryStoreTopQueries()));
+        Step("Availability Group health", () =>
+        {
+            var findings = hc.RunAvailabilityGroupHealth(out var replicas, out var databases);
+            result.Findings.AddRange(findings);
+            result.AvailabilityReplicas.AddRange(replicas);
+            result.AvailabilityDatabases.AddRange(databases);
+        });
+        Step("replication errors", () => result.Findings.AddRange(hc.RunReplicationErrors()));
 
         if (!opt.SkipFrk) RunFrkChecks(hc, opt, result);
 
@@ -48,16 +58,9 @@ public static class HealthCheckRunner
     /// findings. Raw result sets (sp_BlitzCache/sp_BlitzFirst) are untouched - only Findings gets cleaned up.</summary>
     private static void FinalizeFindings(AnalyzerOptions opt, HealthCheckResult result)
     {
-        if (!opt.HealthCheckAllDatabases)
-            result.Findings.RemoveAll(f =>
-                f.DatabaseName != null && !f.DatabaseName.Equals(opt.Database, StringComparison.OrdinalIgnoreCase));
-
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        result.Findings.RemoveAll(f => !seen.Add(DedupeKey(f)));
+        FindingsUtil.FilterToDatabase(result.Findings, opt.Database, opt.HealthCheckAllDatabases);
+        FindingsUtil.Deduplicate(result.Findings);
     }
-
-    private static string DedupeKey(HealthCheckFinding f) =>
-        $"{f.Source}{f.Category}{f.Severity}{f.Title}{f.Details}{f.DatabaseName}{f.ObjectName}";
 
     private static void Step(string label, Action step)
     {

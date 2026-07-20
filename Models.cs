@@ -50,6 +50,14 @@ public sealed class AnalyzerOptions
     /// <summary>Standalone mode: instance-wide logins/permissions inventory across every database.
     /// Runs instead of (not alongside) the columnstore pipeline - --database is not required.</summary>
     public bool PermissionsReport { get; set; }
+
+    /// <summary>Standalone, strictly read-only mode: exercises every code path (a small sample of
+    /// columnstore tables, every health-check native check, FRK detection + instant EXEC if
+    /// installed, Ola detection, the permissions inventory) and writes a pass/fail diagnostic report
+    /// instead of the normal reports. Never touches the install-flow - refuses to run combined with
+    /// --install-missing-tools. Meant to be run manually against a real instance and the resulting
+    /// file handed back for review, since this tool has no live database access of its own.</summary>
+    public bool SelfTest { get; set; }
 }
 
 public enum HealthCheckSeverity { Info, Low, Medium, High, Critical }
@@ -146,6 +154,9 @@ public sealed class ObjectPermissionInfo
     public string StateDesc { get; init; } = "";   // GRANT, DENY, GRANT_WITH_GRANT_OPTION
     public string? SchemaName { get; init; }
     public string? ObjectName { get; init; }
+    /// <summary>Set only for column-level grants (ClassDesc=OBJECT_OR_COLUMN with a nonzero minor_id) -
+    /// null for whole-object, schema, or database-level grants.</summary>
+    public string? ColumnName { get; init; }
 }
 
 public sealed class PermissionsReportResult
@@ -170,6 +181,65 @@ public sealed class HealthCheckResult
     public List<HealthCheckFinding> Findings { get; } = [];
     public List<DynamicResultSet> RawResultSets { get; } = [];
     public List<InstallAction> InstallActions { get; } = [];
+    /// <summary>Persisted, restart-surviving query performance history - only populated for
+    /// databases where Query Store is actually capturing data (state != OFF).</summary>
+    public List<QueryStoreTopQuery> QueryStoreTopQueries { get; } = [];
+    /// <summary>Empty on an instance with no Availability Group - both DMVs behind this return zero
+    /// rows gracefully in that case, not an error.</summary>
+    public List<AvailabilityReplicaStatus> AvailabilityReplicas { get; } = [];
+    public List<AvailabilityDatabaseStatus> AvailabilityDatabases { get; } = [];
+}
+
+/// <summary>Query Store's config/state for one database. A separate Info/Low/High HealthCheckFinding
+/// is generated per database from this (see HealthCheckAnalyzer.RunQueryStoreStatus) - this type just
+/// carries the raw numbers.</summary>
+public sealed class QueryStoreStatus
+{
+    public string DatabaseName { get; init; } = "";
+    public string ActualStateDesc { get; init; } = "";   // OFF, READ_ONLY, READ_WRITE, ERROR
+    public string DesiredStateDesc { get; init; } = "";
+    /// <summary>Bitmask - see sys.database_query_store_options docs. Notably: 65536 = hit
+    /// max_storage_size_mb, 131072 = too many distinct statements, 524288 = database out of disk space.</summary>
+    public int ReadonlyReason { get; init; }
+    public decimal CurrentStorageSizeMb { get; init; }
+    public decimal MaxStorageSizeMb { get; init; }
+    public string QueryCaptureModeDesc { get; init; } = "";
+}
+
+public sealed class QueryStoreTopQuery
+{
+    public string DatabaseName { get; init; } = "";
+    public long QueryId { get; init; }
+    public string QueryText { get; init; } = "";
+    public long TotalExecutions { get; init; }
+    public double AvgCpuTimeMs { get; init; }
+    public double AvgDurationMs { get; init; }
+    /// <summary>8KB pages - same unit as CachedQuery.TotalLogicalReads elsewhere in this tool.</summary>
+    public double AvgLogicalReads { get; init; }
+}
+
+/// <summary>One Availability Group replica's connection/sync health (server-wide, not per-database).</summary>
+public sealed class AvailabilityReplicaStatus
+{
+    public string AgName { get; init; } = "";
+    public string ReplicaServerName { get; init; } = "";
+    public string RoleDesc { get; init; } = "";                   // PRIMARY, SECONDARY
+    public string ConnectedStateDesc { get; init; } = "";         // CONNECTED, DISCONNECTED
+    public string SynchronizationHealthDesc { get; init; } = "";  // HEALTHY, PARTIALLY_HEALTHY, NOT_HEALTHY
+}
+
+/// <summary>One database's replication state on one AG replica - the actual lag/queue-depth signal.</summary>
+public sealed class AvailabilityDatabaseStatus
+{
+    public string AgName { get; init; } = "";
+    public string ReplicaServerName { get; init; } = "";
+    public string DatabaseName { get; init; } = "";
+    public bool IsSuspended { get; init; }
+    public string SynchronizationStateDesc { get; init; } = "";  // SYNCHRONIZED, SYNCHRONIZING, NOT_SYNCHRONIZING
+    public long LogSendQueueSizeKb { get; init; }
+    public long RedoQueueSizeKb { get; init; }
+    /// <summary>Null on the primary (only meaningful for secondaries).</summary>
+    public double? SecondaryLagSeconds { get; init; }
 }
 
 public sealed class TableInfo
@@ -337,4 +407,31 @@ public sealed class CachedQuery
     public double TotalElapsedMs { get; init; }
     public DateTime LastExecutionTime { get; init; }
     public string StatementText { get; init; } = "";
+}
+
+// ==========================================================================================
+// --self-test: read-only exercise of every code path, for a human to run manually against a
+// real instance (this tool never gets live DB access) and hand the resulting file back.
+// ==========================================================================================
+
+public sealed class SelfTestStepResult
+{
+    public string Category { get; init; } = "";  // Columnstore, HealthCheck-Native, HealthCheck-FRK, Permissions
+    public string Step { get; init; } = "";
+    public bool Success { get; init; }
+    public long ElapsedMs { get; init; }
+    /// <summary>Row/column counts and shape only - deliberately never actual data values, since this
+    /// is meant to be safe to run (and share) against a real production instance.</summary>
+    public string? Summary { get; init; }
+    public string? ErrorType { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+public sealed class SelfTestResult
+{
+    public string ServerName { get; init; } = "";
+    public DateTime GeneratedAt { get; init; }
+    public List<SelfTestStepResult> Steps { get; } = [];
+    public int PassCount => Steps.Count(s => s.Success);
+    public int FailCount => Steps.Count(s => !s.Success);
 }

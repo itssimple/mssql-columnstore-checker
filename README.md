@@ -110,6 +110,12 @@ Permissions: `VIEW SERVER STATE` + read access to the database.
 |------|---------|---------|
 | `--permissions-report` | off | Runs a logins/permissions security checkup across **every** database on the instance, instead of the columnstore analysis (not alongside it). `--database` is not required and is ignored when this is set |
 
+**Self-test** (standalone - see "Self-test (optional, new)" below)
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--self-test` | off | Strictly read-only diagnostic pass exercising every code path in the tool, instead of any other mode. `--database` is not required. Cannot be combined with `--install-missing-tools` |
+
 ## Output
 
 Console shows a ranked summary; the output folder gets:
@@ -221,6 +227,18 @@ recovery model with no recent log backup" gap flag — a silent point-in-time-re
 tempdb file count/config, common `sp_configure`/database-flag smells (MAXDOP, cost threshold
 for parallelism, max server memory, auto-shrink/auto-close), and recent Agent job failures.
 
+**Query Store** — per-database state check plus top resource-consuming queries. Unlike the
+plan-cache scrape and `sp_BlitzCache`, Query Store data is persisted and survives restarts and
+memory pressure. Flags the well-known gotcha where Query Store silently goes `READ_ONLY` and
+stops capturing new query data because it hit its configured storage cap — a real production
+incident that produces zero alerts on its own.
+
+**Availability Group / replication health** — actual sync-state and lag, not just a topology
+count: per-replica connection/health state, per-database sync state, redo/log-send queue depth,
+and seconds of lag (`sys.dm_hadr_*`). Flags suspended data movement, unhealthy replicas, and
+growing redo queues. Legacy transactional/snapshot/merge replication gets lighter treatment —
+recent error surfacing from the distributor only, not a full latency deep-dive.
+
 **"Leave with a good conscience" inventory** — the parts of this aimed specifically at
 knowledge transfer, not just diagnostics:
 
@@ -311,3 +329,35 @@ practice that means `sysadmin`, or `securityadmin` plus `VIEW DEFINITION` in eve
 normal least-privilege login will only see a partial picture. Databases the connecting login
 can't see into are skipped with a warning, not a fatal error — the report still writes with
 whatever it could reach, and lists what it couldn't in a Warnings section.
+
+## Self-test (optional, new)
+
+A strictly **read-only** diagnostic pass, meant to be run manually against a real instance and
+the resulting file(s) shared for review — useful when you want confidence this tool actually
+works against your specific SQL Server version/config before relying on it, without needing a
+dedicated test cluster.
+
+```bash
+dotnet run -- --server SQLPROD01 --self-test
+```
+
+- Exercises every code path in the tool: a small sample of columnstore tables (capped at 3, for
+  speed), every health-check native check (including Query Store and Availability Group health),
+  First Responder Kit detection plus **instant-only** execution of whatever's installed (never
+  the 30-second live sample, regardless of `--blitzfirst-seconds`), Ola Hallengren detection, and
+  the full permissions inventory.
+- **Every single step is a `SELECT`, a read-only `DBCC` command, or an `EXEC` of an
+  already-installed read-only diagnostic proc.** Nothing here ever creates, modifies, or deletes
+  anything, and it never touches the auto-install flow — it refuses to even start if
+  `--install-missing-tools` is also passed.
+- Each step's summary captures row/column **counts and shape only** — never actual data values —
+  so the output file is safe to hand back to whoever's helping build or debug this tool, even
+  from a production instance.
+- `--database` is not required (every check that's normally database-scoped either loops every
+  database or is instance-wide by nature, same as `--permissions-report`).
+- Writes `self_test_results.json` (precise, for someone to read closely) and
+  `self_test_results.md` (a quick pass/fail table) to `--output`, plus a console summary.
+
+Separately, `ColumnstoreAnalyzer.Tests` (xUnit) covers the pure logic that doesn't need a
+database at all — FRK result mapping, scoring, permission grouping, CSV escaping, findings
+dedup — and runs anywhere with `dotnet test ColumnstoreAnalyzer.Tests`.

@@ -125,7 +125,7 @@ public sealed class HealthCheckAnalyzer
 
     private List<string> GetTargetDatabases()
     {
-        if (!_opt.HealthCheckAllDatabases) return [_opt.Database];
+        if (!_opt.HealthCheckAllDatabases) return [ResolveScopeDatabase()];
 
         var names = new List<string>();
         using var conn = Open();
@@ -134,6 +134,26 @@ public sealed class HealthCheckAnalyzer
         using var r = cmd.ExecuteReader();
         while (r.Read()) names.Add(r.GetString(0));
         return names;
+    }
+
+    private string? _resolvedScopeDatabase;
+
+    /// <summary>_opt.Database is blank in modes that don't require it (--self-test, --permissions-report
+    /// doesn't use this at all). Falls back to whatever database the connection actually landed on
+    /// (its login's default) rather than passing an empty string into 3-part names/@DatabaseName
+    /// parameters - Analyzer.Escape("") produces the literal identifier "[]", which SQL Server rejects
+    /// outright (error 8155), and some FRK procs (sp_BlitzCache) validate @DatabaseName and reject ""
+    /// with their own error. Cached per HealthCheckAnalyzer instance since it never changes mid-run.</summary>
+    private string ResolveScopeDatabase()
+    {
+        if (!string.IsNullOrWhiteSpace(_opt.Database)) return _opt.Database;
+        if (_resolvedScopeDatabase != null) return _resolvedScopeDatabase;
+
+        using var conn = Open();
+        using var cmd = new SqlCommand("SELECT DB_NAME();", conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+        _resolvedScopeDatabase = (string)cmd.ExecuteScalar()!;
+        return _resolvedScopeDatabase;
     }
 
     public List<HealthCheckFinding> RunWaitStats(int topN = 10)
@@ -526,7 +546,8 @@ public sealed class HealthCheckAnalyzer
 
         var replicated = r.GetInt32(0);
         var cdc = r.GetInt32(1);
-        var ag = r.GetInt32(2);
+        // ag_replica_count (column 2) is intentionally unused here - superseded by the real AG health
+        // check below (RunAvailabilityGroupHealth), which reports actual sync state, not just a count.
 
         if (replicated > 0)
             findings.Add(new HealthCheckFinding
@@ -542,15 +563,284 @@ public sealed class HealthCheckAnalyzer
                 Title = $"{cdc} database(s) have Change Data Capture enabled",
                 Details = "See per-table CDC flags in the columnstore report for which tables are tracked."
             });
-        if (ag > 0)
+
+        return findings;
+    }
+
+    // ======================================================================================
+    // Availability Group / replication health - real sync-state/lag checks, not just counts.
+    // ======================================================================================
+
+    public List<AvailabilityReplicaStatus> GetAvailabilityReplicaHealth()
+    {
+        var results = new List<AvailabilityReplicaStatus>();
+        using var conn = Open();
+        using var cmd = new SqlCommand(SqlHealthCheck.AvailabilityReplicaHealth, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            results.Add(new AvailabilityReplicaStatus
+            {
+                AgName = r.GetString(0), ReplicaServerName = r.GetString(1),
+                RoleDesc = r.GetString(2), ConnectedStateDesc = r.GetString(3), SynchronizationHealthDesc = r.GetString(4)
+            });
+        return results;
+    }
+
+    public List<AvailabilityDatabaseStatus> GetAvailabilityDatabaseHealth()
+    {
+        var results = new List<AvailabilityDatabaseStatus>();
+        using var conn = Open();
+        using var cmd = new SqlCommand(SqlHealthCheck.AvailabilityDatabaseHealth, conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            results.Add(new AvailabilityDatabaseStatus
+            {
+                AgName = r.GetString(0), ReplicaServerName = r.GetString(1), DatabaseName = r.GetString(2),
+                IsSuspended = r.GetBoolean(3), SynchronizationStateDesc = r.GetString(4),
+                LogSendQueueSizeKb = r.IsDBNull(5) ? 0 : r.GetInt64(5), RedoQueueSizeKb = r.IsDBNull(6) ? 0 : r.GetInt64(6),
+                SecondaryLagSeconds = r.IsDBNull(7) ? (double?)null : r.GetInt64(7)
+            });
+        return results;
+    }
+
+    /// <summary>One finding per unhealthy replica or database; a single Info summary finding if
+    /// everything's fine (avoids silence being ambiguous between "healthy" and "never checked").</summary>
+    public List<HealthCheckFinding> RunAvailabilityGroupHealth(out List<AvailabilityReplicaStatus> replicas,
+        out List<AvailabilityDatabaseStatus> databases)
+    {
+        replicas = GetAvailabilityReplicaHealth();
+        databases = GetAvailabilityDatabaseHealth();
+        var findings = new List<HealthCheckFinding>();
+
+        foreach (var rep in replicas)
+        {
+            if (rep.ConnectedStateDesc != "CONNECTED")
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.High,
+                    Title = $"AG '{rep.AgName}': replica {rep.ReplicaServerName} is {rep.ConnectedStateDesc}",
+                    Details = $"Role: {rep.RoleDesc}.", Recommendation = "Investigate connectivity between AG replicas immediately."
+                });
+            else if (rep.SynchronizationHealthDesc == "NOT_HEALTHY")
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.High,
+                    Title = $"AG '{rep.AgName}': replica {rep.ReplicaServerName} sync health is NOT_HEALTHY",
+                    Details = $"Role: {rep.RoleDesc}."
+                });
+            else if (rep.SynchronizationHealthDesc == "PARTIALLY_HEALTHY")
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.Medium,
+                    Title = $"AG '{rep.AgName}': replica {rep.ReplicaServerName} sync health is PARTIALLY_HEALTHY",
+                    Details = $"Role: {rep.RoleDesc} - at least one database on this replica isn't fully synchronized."
+                });
+        }
+
+        const long QueueWarningKb = 1_048_576; // 1 GB
+        foreach (var db in databases)
+        {
+            if (db.IsSuspended)
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.Critical,
+                    Title = $"AG '{db.AgName}': {db.DatabaseName} data movement is SUSPENDED on {db.ReplicaServerName}",
+                    Details = "This database has stopped replicating entirely - it is not protected until resumed.",
+                    Recommendation = "ALTER DATABASE ... SET HADR RESUME, after investigating why it was suspended.",
+                    DatabaseName = db.DatabaseName
+                });
+            else if (db.SynchronizationStateDesc == "NOT_SYNCHRONIZING")
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.High,
+                    Title = $"AG '{db.AgName}': {db.DatabaseName} is NOT_SYNCHRONIZING on {db.ReplicaServerName}",
+                    DatabaseName = db.DatabaseName
+                });
+
+            if (db.SecondaryLagSeconds is > 300)
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.Medium,
+                    Title = $"AG '{db.AgName}': {db.DatabaseName} on {db.ReplicaServerName} is {db.SecondaryLagSeconds:N0}s behind",
+                    Recommendation = "Check network throughput and redo-thread CPU on the secondary if this persists.",
+                    DatabaseName = db.DatabaseName
+                });
+
+            if (db.RedoQueueSizeKb > QueueWarningKb)
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.Medium,
+                    Title = $"AG '{db.AgName}': {db.DatabaseName} redo queue on {db.ReplicaServerName} is {db.RedoQueueSizeKb / 1024:N0} MB",
+                    Details = "A large, growing redo queue means the secondary can't keep up with incoming log records.",
+                    DatabaseName = db.DatabaseName
+                });
+        }
+
+        if (findings.Count == 0 && replicas.Count > 0)
             findings.Add(new HealthCheckFinding
             {
-                Source = "Native", Category = "Topology", Severity = HealthCheckSeverity.Info,
-                Title = $"{ag} Availability Group replica(s) detected",
-                Details = "This instance participates in an Always On Availability Group."
+                Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.Info,
+                Title = $"{replicas.Count} AG replica(s) across {replicas.Select(r => r.AgName).Distinct().Count()} Availability Group(s) - all healthy"
             });
 
         return findings;
+    }
+
+    /// <summary>Lighter than the AG check above by design: legacy transactional/snapshot/merge
+    /// replication error surfacing only, not a full latency deep-dive. Only runs anything if this
+    /// instance is actually configured as a distributor.</summary>
+    public List<HealthCheckFinding> RunReplicationErrors()
+    {
+        var findings = new List<HealthCheckFinding>();
+        var distributionDbs = new List<string>();
+
+        using (var conn = Open())
+        using (var cmd = new SqlCommand(SqlHealthCheck.DistributionDatabases, conn))
+        {
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) distributionDbs.Add(r.GetString(0));
+        }
+
+        foreach (var distDb in distributionDbs)
+        {
+            using var conn = Open();
+            using var cmd = new SqlCommand(string.Format(SqlHealthCheck.ReplicationErrorsFmt, Analyzer.Escape(distDb)), conn);
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            using var r = cmd.ExecuteReader();
+
+            var errors = new List<(DateTime Time, string Text)>();
+            while (r.Read())
+                errors.Add((r.GetDateTime(0), r.GetString(1)));
+
+            if (errors.Count > 0)
+                findings.Add(new HealthCheckFinding
+                {
+                    Source = "Native", Category = "Availability", Severity = HealthCheckSeverity.High,
+                    Title = $"{errors.Count} replication error(s) in the last 24h ({distDb})",
+                    Details = string.Join(" | ", errors.Take(5).Select(e => $"{e.Time:yyyy-MM-dd HH:mm}: {e.Text}")) +
+                              (errors.Count > 5 ? $" ... and {errors.Count - 5} more" : "")
+                });
+        }
+
+        return findings;
+    }
+
+    // ======================================================================================
+    // Query Store - persisted, restart-surviving query performance history (unlike plan cache).
+    // ======================================================================================
+
+    public QueryStoreStatus GetQueryStoreStatus(string database)
+    {
+        using var conn = Open();
+        using var cmd = new SqlCommand(string.Format(SqlHealthCheck.QueryStoreStatusFmt, Analyzer.Escape(database)), conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+        using var r = cmd.ExecuteReader();
+        if (!r.Read())
+            return new QueryStoreStatus { DatabaseName = database, ActualStateDesc = "OFF" };
+
+        return new QueryStoreStatus
+        {
+            DatabaseName = database,
+            ActualStateDesc = r.GetString(0),
+            DesiredStateDesc = r.GetString(1),
+            ReadonlyReason = r.GetInt32(2),
+            CurrentStorageSizeMb = r.GetDecimal(3),
+            MaxStorageSizeMb = r.GetDecimal(4),
+            QueryCaptureModeDesc = r.GetString(5)
+        };
+    }
+
+    public List<QueryStoreTopQuery> GetQueryStoreTopQueries(string database, int topN = 10)
+    {
+        var results = new List<QueryStoreTopQuery>();
+        using var conn = Open();
+        using var cmd = new SqlCommand(string.Format(SqlHealthCheck.QueryStoreTopQueriesFmt, Analyzer.Escape(database)), conn);
+        cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+        cmd.Parameters.AddWithValue("@N", topN);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            results.Add(new QueryStoreTopQuery
+            {
+                DatabaseName = database,
+                QueryId = r.GetInt64(0),
+                QueryText = r.GetString(1),
+                TotalExecutions = r.GetInt64(2),
+                AvgCpuTimeMs = r.GetDouble(3) / 1000.0,
+                AvgDurationMs = r.GetDouble(4) / 1000.0,
+                AvgLogicalReads = r.GetDouble(5)
+            });
+        }
+        return results;
+    }
+
+    /// <summary>One finding per database in scope: not enabled (Low), stuck READ_ONLY due to a real
+    /// problem like hitting its storage cap (High - a well-known gotcha where it silently stops
+    /// capturing new data with no alert), or active and healthy (Info).</summary>
+    public List<HealthCheckFinding> RunQueryStoreStatus()
+    {
+        var findings = new List<HealthCheckFinding>();
+        foreach (var db in GetTargetDatabases())
+            findings.Add(BuildQueryStoreFinding(GetQueryStoreStatus(db)));
+        return findings;
+    }
+
+    /// <summary>Top queries for every database in scope where Query Store is actually capturing data.</summary>
+    public List<QueryStoreTopQuery> RunQueryStoreTopQueries(int topN = 10)
+    {
+        var results = new List<QueryStoreTopQuery>();
+        foreach (var db in GetTargetDatabases())
+        {
+            if (GetQueryStoreStatus(db).ActualStateDesc == "OFF") continue;
+            results.AddRange(GetQueryStoreTopQueries(db, topN));
+        }
+        return results;
+    }
+
+    private static HealthCheckFinding BuildQueryStoreFinding(QueryStoreStatus s)
+    {
+        if (s.ActualStateDesc == "OFF")
+            return new HealthCheckFinding
+            {
+                Source = "Native", Category = "Performance", Severity = HealthCheckSeverity.Low,
+                Title = $"{s.DatabaseName}: Query Store is not enabled",
+                Details = "No persisted query-performance history for this database - the plan-cache scrape and " +
+                          "sp_BlitzCache are the only fallback, and both get wiped on restart or memory pressure.",
+                Recommendation = "Consider ALTER DATABASE ... SET QUERY_STORE = ON for restart-surviving query history.",
+                DatabaseName = s.DatabaseName
+            };
+
+        // Bits per sys.database_query_store_options.readonly_reason: 1=db read-only, 2=single-user,
+        // 4=emergency mode, 8=secondary replica (all benign/expected states, not alarming), 65536=hit
+        // max_storage_size_mb, 131072=too many distinct statements, 262144=in-memory items not yet
+        // flushed, 524288=database itself out of disk space (these four are real problems).
+        var badReasons = new List<string>();
+        if ((s.ReadonlyReason & 65536) != 0) badReasons.Add("hit its configured max storage size");
+        if ((s.ReadonlyReason & 131072) != 0) badReasons.Add("too many distinct statements tracked (internal memory limit)");
+        if ((s.ReadonlyReason & 524288) != 0) badReasons.Add("the database's own disk ran out of space");
+
+        if (s.ActualStateDesc == "READ_ONLY" && badReasons.Count > 0)
+            return new HealthCheckFinding
+            {
+                Source = "Native", Category = "Performance", Severity = HealthCheckSeverity.High,
+                Title = $"{s.DatabaseName}: Query Store is stuck READ_ONLY and silently not capturing new query data",
+                Details = $"Reason(s): {string.Join(", ", badReasons)}. Currently using " +
+                          $"{s.CurrentStorageSizeMb:N0} of {s.MaxStorageSizeMb:N0} MB allocated.",
+                Recommendation = "Increase max_storage_size_mb or purge old Query Store data, then set the database " +
+                                  "back to READ_WRITE - this stops recording silently, with no alert of its own.",
+                DatabaseName = s.DatabaseName
+            };
+
+        return new HealthCheckFinding
+        {
+            Source = "Native", Category = "Performance", Severity = HealthCheckSeverity.Info,
+            Title = $"{s.DatabaseName}: Query Store is active ({s.ActualStateDesc}, capture mode {s.QueryCaptureModeDesc})",
+            Details = $"Using {s.CurrentStorageSizeMb:N0} of {s.MaxStorageSizeMb:N0} MB allocated storage.",
+            DatabaseName = s.DatabaseName
+        };
     }
 
     // ======================================================================================
@@ -593,7 +883,7 @@ public sealed class HealthCheckAnalyzer
         using var conn = Open();
         using var cmd = new SqlCommand(sql, conn);
         cmd.CommandTimeout = timeoutOverride ?? _opt.QueryTimeoutSeconds;
-        if (scopedToDatabase) cmd.Parameters.AddWithValue("@DbName", _opt.Database);
+        if (scopedToDatabase) cmd.Parameters.AddWithValue("@DbName", ResolveScopeDatabase());
         using var r = cmd.ExecuteReader();
         return ReadAllDynamic(r, namePrefix);
     }

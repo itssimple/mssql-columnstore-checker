@@ -48,13 +48,17 @@ ORDER BY m.name;";
 
     /// <summary>Explicit grants only - fixed database roles' built-in permissions are implicit and never
     /// appear as rows here, so this is naturally just the custom/audit-worthy grants, no extra filtering
-    /// needed. class IN (0,1,3) = DATABASE, OBJECT_OR_COLUMN, SCHEMA - the practically useful scopes.</summary>
+    /// needed. class IN (0,1,3) = DATABASE, OBJECT_OR_COLUMN, SCHEMA - the practically useful scopes.
+    /// minor_id matters: for OBJECT_OR_COLUMN, a nonzero minor_id means this is a COLUMN-level grant
+    /// (major_id is still the object_id; minor_id is the column_id) - without it, every distinct
+    /// column-level grant on the same table looks like an identical duplicate row.</summary>
     public const string DatabasePermissionsFmt = @"
 SELECT
     dp.name AS grantee_name,
     dp.type_desc AS grantee_type,
     perm.class_desc,
     perm.major_id,
+    perm.minor_id,
     perm.permission_name,
     perm.state_desc
 FROM {0}.sys.database_permissions perm
@@ -70,4 +74,8 @@ JOIN {0}.sys.schemas s ON s.schema_id = o.schema_id;";
 
     public const string SchemaNamesFmt = @"
 SELECT schema_id, name FROM {0}.sys.schemas;";
+
+    /// <summary>(object_id, column_id) -> column name, for resolving column-level grants (minor_id != 0).</summary>
+    public const string ColumnNamesFmt = @"
+SELECT object_id, column_id, name FROM {0}.sys.columns;";
 }

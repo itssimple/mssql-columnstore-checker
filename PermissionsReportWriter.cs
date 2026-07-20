@@ -58,11 +58,11 @@ public static class PermissionsReportWriter
     private static void WriteObjectGrantsCsv(string path, PermissionsReportResult result)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("database,grantee,grantee_type,scope,permission,state,schema,object");
+        sb.AppendLine("database,grantee,grantee_type,scope,permission,state,schema,object,column");
         foreach (var p in result.ObjectPermissions.OrderBy(p => p.DatabaseName).ThenBy(p => p.GranteeName))
             sb.AppendLine(string.Join(",",
                 Csv(p.DatabaseName), Csv(p.GranteeName), Csv(p.GranteeType), Csv(p.ClassDesc),
-                Csv(p.PermissionName), Csv(p.StateDesc), Csv(p.SchemaName), Csv(p.ObjectName)));
+                Csv(p.PermissionName), Csv(p.StateDesc), Csv(p.SchemaName), Csv(p.ObjectName), Csv(p.ColumnName)));
         File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
     }
 
@@ -72,12 +72,5 @@ public static class PermissionsReportWriter
         File.WriteAllText(path, json, Encoding.UTF8);
     }
 
-    private static string Csv(string? s)
-    {
-        s ??= "";
-        s = s.Replace("\r", " ").Replace("\n", " ");
-        if (s.Contains(',') || s.Contains('"'))
-            s = "\"" + s.Replace("\"", "\"\"") + "\"";
-        return s;
-    }
+    private static string Csv(string? s) => CsvUtil.Escape(s);
 }

@@ -105,25 +105,27 @@ public static class PermissionsReportRunner
             });
 
         string[] highRiskPermissions = ["CONTROL", "ALTER", "TAKE OWNERSHIP"];
-        foreach (var perm in result.ObjectPermissions)
-        {
-            var isHighRiskPermission = perm.StateDesc == "GRANT" &&
-                                       highRiskPermissions.Contains(perm.PermissionName, StringComparer.OrdinalIgnoreCase);
-            var isPublicGrant = perm.GranteeName.Equals("public", StringComparison.OrdinalIgnoreCase);
-            if (!isHighRiskPermission && !isPublicGrant) continue;
+        var risky = result.ObjectPermissions.Where(p =>
+            (p.StateDesc == "GRANT" && highRiskPermissions.Contains(p.PermissionName, StringComparer.OrdinalIgnoreCase))
+            || p.GranteeName.Equals("public", StringComparison.OrdinalIgnoreCase));
 
-            var target = perm.ObjectName != null ? $"{perm.SchemaName}.{perm.ObjectName}"
-                : perm.SchemaName ?? "(database-level)";
+        foreach (var group in PermissionGrouping.Group(risky))
+        {
+            var isPublicGrant = group.GranteeName.Equals("public", StringComparison.OrdinalIgnoreCase);
+            var targetSummary = PermissionGrouping.TargetSummary(group.Targets, 10) +
+                                 (group.Targets.Count > 10 ? " (see permissions_object_grants.csv)" : "");
+
             result.Findings.Add(new HealthCheckFinding
             {
                 Source = "Native", Category = "Landmine",
                 Severity = isPublicGrant ? HealthCheckSeverity.High : HealthCheckSeverity.Medium,
-                Title = $"{perm.StateDesc} {perm.PermissionName} on {target} to {perm.GranteeName}",
-                Details = $"Grantee type: {perm.GranteeType}, scope: {perm.ClassDesc}.",
+                Title = $"{group.StateDesc} {group.PermissionName} to {group.GranteeName} on {group.Targets.Count} target(s)",
+                Details = $"Grantee type: {group.GranteeType}. Targets: {targetSummary}",
                 Recommendation = isPublicGrant
                     ? "Explicit grants to the 'public' role apply to every user in the database - verify this is intentional."
                     : "High-impact permission (CONTROL/ALTER/TAKE OWNERSHIP) - verify this grantee still needs it.",
-                DatabaseName = perm.DatabaseName, ObjectName = target
+                DatabaseName = group.DatabaseName,
+                ObjectName = group.Targets.Count == 1 ? group.Targets[0] : null
             });
         }
     }
