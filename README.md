@@ -55,6 +55,19 @@ Permissions: `VIEW SERVER STATE` + read access to the database.
 
 ### Options
 
+**Connection / auth**
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--server`, `-s` | *(required)* | Server\instance name |
+| `--database`, `-d` | *(required)* | Target database |
+| `--user`, `-u` | Windows integrated auth | SQL auth login - prompts for a masked password interactively |
+| `--password`, `-p` | — | SQL auth password. Discouraged: ends up in shell history / process lists |
+| `--password-stdin` | off | Read the SQL auth password from stdin, for scripts (`echo $PW \| tool ...`) |
+| `--no-trust-cert` | off | Disable `TrustServerCertificate=true` |
+
+**Table discovery & sampling**
+
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--min-rows` | 1,000,000 | Table qualifies at this row count... |
@@ -64,8 +77,32 @@ Permissions: `VIEW SERVER STATE` + read access to the database.
 | `--column-batch` | 20 | Columns per cardinality query |
 | `--timeout` | 600 | Per-query timeout (seconds) |
 | `--max-queries` | 20 | Cached queries kept per table |
-| `--output` | timestamped folder | Report destination |
-| `--no-trust-cert` | off | Disable TrustServerCertificate |
+| `--output`, `-o` | timestamped folder | Report destination |
+| `--no-html-report` | off (report is written) | Skip writing the self-contained `report.html` dashboard |
+
+**Optional local-LLM narrative** (second opinion alongside the built-in rule-based one)
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--llm-endpoint` | — | OpenAI-compatible endpoint, e.g. `http://localhost:11434` (Ollama), `http://localhost:1234` (LM Studio). Omit to skip the LLM step entirely |
+| `--llm-model` | `llama3.1` | Model name at the endpoint |
+| `--llm-key` | — | Bearer token, if the endpoint needs one |
+| `--llm-timeout` | 300 | LLM request timeout (seconds) |
+
+**Health check** (opt-in; see "Health check (optional, new)" below for the full permission/safety writeup)
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--health-check` | off | Run the whole opt-in health-check stage alongside columnstore analysis |
+| `--skip-frk` | off | Don't detect/run the sp_Blitz family |
+| `--skip-ola` | off | Don't detect Ola Hallengren maintenance jobs |
+| `--skip-whoisactive` | off | Don't detect sp_WhoIsActive |
+| `--include-blitzlock` | off | Also run sp_BlitzLock if installed (deadlock analysis) |
+| `--include-blitzbackups` | off | Also run sp_BlitzBackups if installed (overlaps the native backup-recency check) |
+| `--tools-database` | `master` | Database FRK / sp_WhoIsActive are installed in |
+| `--blitzfirst-seconds` | 30 | Extra live `@Seconds=` sample captured alongside the always-run instant sp_BlitzFirst snapshot; adds that many seconds of real wall-clock time. `0` skips the extra sample |
+| `--health-check-all-databases` | off (connected DB only) | Widen backup-recency/CHECKDB-age/config checks and finding filtering to every database on the instance |
+| `--install-missing-tools` | off | **Opt-in escalation.** If FRK/Ola Hallengren are missing, offer to download (pinned version, SHA-256 verified), confirm interactively, and install them. Grants this run `CREATE PROCEDURE` (usually in `master`) and SQL Agent job creation rights - never on by default, aborts safely if run non-interactively |
 
 ## Output
 
