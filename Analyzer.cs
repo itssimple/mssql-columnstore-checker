@@ -258,6 +258,73 @@ public sealed class Analyzer
         }
     }
 
+    /// <summary>Supplements MatchPlanCacheQueries with Query Store's persisted, restart-surviving
+    /// query history for the connected database - same table-name-substring matching approach.
+    /// Entirely additive: if Query Store is off (the common case for anyone not using it), this is a
+    /// no-op and the plan-cache evidence above stands alone, unchanged from before this existed.
+    /// Returns a caveat string when Query Store is enabled but not actually trustworthy right now
+    /// (stuck READ_ONLY - the well-known "silently stopped capturing data" gotcha); null otherwise.</summary>
+    public string? MatchQueryStoreQueries(List<TableInfo> tables)
+    {
+        using var conn = Open();
+
+        string actualState;
+        int readonlyReason;
+        long currentMb, maxMb;
+        using (var cmd = new SqlCommand(Sql.QueryStoreStatus, conn))
+        {
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return null; // shouldn't happen on 2016+, but nothing to add either way
+            actualState = r.GetString(0);
+            readonlyReason = r.GetInt32(1);
+            currentMb = r.GetInt64(2);
+            maxMb = r.GetInt64(3);
+        }
+
+        if (actualState == "OFF") return null;
+
+        // Bits per sys.database_query_store_options.readonly_reason: 65536=hit max_storage_size_mb,
+        // 131072=too many distinct statements, 524288=database itself out of disk space - all mean
+        // Query Store has silently stopped capturing new data, with no alert of its own.
+        if (actualState == "READ_ONLY" && (readonlyReason & (65536 | 131072 | 524288)) != 0)
+            return $"Query Store is stuck READ_ONLY (using {currentMb:N0} of {maxMb:N0} MB allocated) - " +
+                   "it has stopped capturing new query data, so the referencing-queries evidence above may be stale.";
+
+        var all = new List<CachedQuery>();
+        using (var cmd = new SqlCommand(Sql.QueryStoreTopQueries, conn))
+        {
+            cmd.CommandTimeout = _opt.QueryTimeoutSeconds;
+            cmd.Parameters.AddWithValue("@N", 500); // headroom for per-table substring matching below
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                all.Add(new CachedQuery
+                {
+                    Source = "QueryStore",
+                    StatementText = r.GetString(0),
+                    ExecutionCount = r.GetInt64(1),
+                    TotalLogicalReads = (long)r.GetDouble(2),
+                    TotalCpuMs = r.GetDouble(3),
+                    TotalElapsedMs = r.GetDouble(4),
+                    LastExecutionTime = r.GetDateTime(5)
+                });
+            }
+        }
+
+        foreach (var t in tables)
+        {
+            var matches = all
+                .Where(q => q.StatementText.Contains(t.TableName, StringComparison.OrdinalIgnoreCase)
+                            && !q.StatementText.Contains("AS __rows", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(q => q.TotalLogicalReads)
+                .Take(_opt.MaxQueriesPerTable);
+            t.ReferencingQueries.AddRange(matches);
+        }
+
+        return null;
+    }
+
     internal static string Escape(string identifier) => "[" + identifier.Replace("]", "]]") + "]";
 
     private static IEnumerable<List<T>> Chunk<T>(List<T> source, int size)

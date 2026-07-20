@@ -28,8 +28,8 @@ public static class Narrative
         if (allUsageZero && cacheShowsActivity)
         {
             sb.AppendLine(
-                "> **Data-quality flag:** every table shows zero index usage, yet the plan cache proves recent " +
-                "activity. The usage DMVs almost certainly reset recently (instance restart). The workload half " +
+                "> **Data-quality flag:** every table shows zero index usage, yet cached/persisted query history " +
+                "proves recent activity. The usage DMVs almost certainly reset recently (instance restart). The workload half " +
                 "of the scoring contributed nothing — scores below are driven by data shape and size only. " +
                 "Re-run after the instance has a week of uptime.");
             sb.AppendLine();
@@ -206,8 +206,9 @@ public static class Narrative
         {
             var perExec = top.ExecutionCount > 0 ? (double)top.TotalLogicalReads / top.ExecutionCount : 0;
             sb.AppendLine();
+            var sourceLabel = top.Source == "QueryStore" ? "Heaviest query (Query Store)" : "Heaviest cached query";
             sb.AppendLine(
-                $"**Heaviest cached query:** {top.ExecutionCount:N0} executions, {top.TotalLogicalReads:N0} reads " +
+                $"**{sourceLabel}:** {top.ExecutionCount:N0} executions, {top.TotalLogicalReads:N0} reads " +
                 $"(~{perExec:N0}/exec), {top.TotalCpuMs / 1000:N0}s CPU:\n\n```sql\n{top.StatementText}\n```");
             if (ContainsIgnoreCase(top.StatementText, "OPENJSON"))
                 sb.AppendLine("It shreds JSON with OPENJSON on every run — consider promoting the queried JSON " +

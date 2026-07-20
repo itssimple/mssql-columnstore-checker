@@ -140,4 +140,32 @@ SELECT
     sqlserver_start_time,
     DATEDIFF(DAY, sqlserver_start_time, SYSDATETIME()) AS uptime_days
 FROM sys.dm_os_sys_info;";
+
+    /// <summary>Query Store state for the CONNECTED database - no 3-part name needed, unlike the
+    /// health-check stage's cross-database version, since this always runs against opt.Database.
+    /// current_storage_size_mb/max_storage_size_mb are bigint, not decimal (confirmed the hard way).</summary>
+    public const string QueryStoreStatus = @"
+SELECT actual_state_desc, readonly_reason, current_storage_size_mb, max_storage_size_mb
+FROM sys.database_query_store_options;";
+
+    /// <summary>Persisted, restart-surviving query history for the connected database - supplements
+    /// (never replaces) the plan-cache scrape above, which gets evicted on restart/memory pressure.
+    /// Aggregated to the same TOTALS shape as PlanCacheStatements (not per-execution averages) so both
+    /// sources merge cleanly into one CachedQuery list. avg_cpu_time/avg_duration are in microseconds;
+    /// avg_logical_io_reads is in 8KB pages - same unit as total_logical_reads above. Param: @N.</summary>
+    public const string QueryStoreTopQueries = @"
+SELECT TOP (@N)
+    qsqt.query_sql_text,
+    SUM(rs.count_executions) AS total_executions,
+    SUM(rs.avg_logical_io_reads * rs.count_executions) AS total_logical_reads,
+    SUM(rs.avg_cpu_time * rs.count_executions) / 1000.0 AS total_cpu_ms,
+    SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_elapsed_ms,
+    MAX(rsi.end_time) AS last_execution_time
+FROM sys.query_store_query qsq
+JOIN sys.query_store_query_text qsqt ON qsqt.query_text_id = qsq.query_text_id
+JOIN sys.query_store_plan qsp ON qsp.query_id = qsq.query_id
+JOIN sys.query_store_runtime_stats rs ON rs.plan_id = qsp.plan_id
+JOIN sys.query_store_runtime_stats_interval rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+GROUP BY qsqt.query_sql_text
+ORDER BY SUM(rs.avg_cpu_time * rs.count_executions) DESC;";
 }

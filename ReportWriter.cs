@@ -102,13 +102,13 @@ public static class ReportWriter
     private static void WriteQueriesCsv(string path, List<TableInfo> tables)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("table,execution_count,total_logical_reads,total_cpu_ms,total_elapsed_ms,last_execution,statement_text");
+        sb.AppendLine("table,source,execution_count,total_logical_reads,total_cpu_ms,total_elapsed_ms,last_execution,statement_text");
         foreach (var t in tables)
         foreach (var q in t.ReferencingQueries)
         {
             var text = q.StatementText.Length > 4000 ? q.StatementText[..4000] : q.StatementText;
             sb.AppendLine(string.Join(",",
-                Csv(t.FullName), q.ExecutionCount, q.TotalLogicalReads,
+                Csv(t.FullName), Csv(q.Source), q.ExecutionCount, q.TotalLogicalReads,
                 F(q.TotalCpuMs), F(q.TotalElapsedMs),
                 q.LastExecutionTime.ToString("yyyy-MM-dd HH:mm:ss"), Csv(text)));
         }

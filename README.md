@@ -37,7 +37,12 @@ Microsoft docs:
    (5+ includes) and **written-but-never-read** drop candidates
 6. Scrapes the plan cache once and matches cached statements to each table by name —
    your proof the tables are actually used, ranked by logical reads
-7. Scores every table 0–100 and writes reports
+7. Supplements that with Query Store's persisted, restart-surviving query history for the same
+   database (if Query Store is on) — same name-matching approach, merged into the same evidence,
+   so a plan-cache eviction or instance restart doesn't erase your workload proof. If Query Store
+   is off, or stuck `READ_ONLY` because it hit its storage cap (a real, silent-failure gotcha),
+   you'll see a one-line note and the plan-cache evidence stands alone, same as before this existed
+8. Scores every table 0–100 and writes reports
 
 ## Build & run
 
@@ -127,7 +132,8 @@ Console shows a ranked summary; the output folder gets:
   duplication factor (avg repeats per value), null count, avg byte length, and a verdict
   (EXCELLENT / GOOD / NEUTRAL / POOR / BAD-dictionary-pressure)
 - `3_index_inventory.csv` — every index with size and columns; wide and dead indexes flagged
-- `4_referencing_queries.csv` — cached statements per table, ranked by logical reads
+- `4_referencing_queries.csv` — statements per table, ranked by logical reads, from the plan
+  cache and (when available) Query Store — a `source` column tells you which
 - `5_analysis.md` — narrative analysis of each table, with punch-list of reclaimable MB
 - `6_llm_analysis.md` — optional second-opinion narrative from a local LLM (if endpoint provided)
 - `full_report.json` — everything, machine-readable
@@ -226,12 +232,6 @@ top wait stats, last known-good `CHECKDB` per database, backup recency (includin
 recovery model with no recent log backup" gap flag — a silent point-in-time-recovery hole),
 tempdb file count/config, common `sp_configure`/database-flag smells (MAXDOP, cost threshold
 for parallelism, max server memory, auto-shrink/auto-close), and recent Agent job failures.
-
-**Query Store** — per-database state check plus top resource-consuming queries. Unlike the
-plan-cache scrape and `sp_BlitzCache`, Query Store data is persisted and survives restarts and
-memory pressure. Flags the well-known gotcha where Query Store silently goes `READ_ONLY` and
-stops capturing new query data because it hit its configured storage cap — a real production
-incident that produces zero alerts on its own.
 
 **Availability Group / replication health** — actual sync-state and lag, not just a topology
 count: per-replica connection/health state, per-database sync state, redo/log-send queue depth,
@@ -342,10 +342,10 @@ dotnet run -- --server SQLPROD01 --self-test
 ```
 
 - Exercises every code path in the tool: a small sample of columnstore tables (capped at 3, for
-  speed), every health-check native check (including Query Store and Availability Group health),
-  First Responder Kit detection plus **instant-only** execution of whatever's installed (never
-  the 30-second live sample, regardless of `--blitzfirst-seconds`), Ola Hallengren detection, and
-  the full permissions inventory.
+  speed, including the Query Store enrichment), every health-check native check (including
+  Availability Group health), First Responder Kit detection plus **instant-only** execution of
+  whatever's installed (never the 30-second live sample, regardless of `--blitzfirst-seconds`),
+  Ola Hallengren detection, and the full permissions inventory.
 - **Every single step is a `SELECT`, a read-only `DBCC` command, or an `EXEC` of an
   already-installed read-only diagnostic proc.** Nothing here ever creates, modifies, or deletes
   anything, and it never touches the auto-install flow — it refuses to even start if

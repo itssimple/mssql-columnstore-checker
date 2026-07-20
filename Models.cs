@@ -181,41 +181,10 @@ public sealed class HealthCheckResult
     public List<HealthCheckFinding> Findings { get; } = [];
     public List<DynamicResultSet> RawResultSets { get; } = [];
     public List<InstallAction> InstallActions { get; } = [];
-    /// <summary>Persisted, restart-surviving query performance history - only populated for
-    /// databases where Query Store is actually capturing data (state != OFF).</summary>
-    public List<QueryStoreTopQuery> QueryStoreTopQueries { get; } = [];
     /// <summary>Empty on an instance with no Availability Group - both DMVs behind this return zero
     /// rows gracefully in that case, not an error.</summary>
     public List<AvailabilityReplicaStatus> AvailabilityReplicas { get; } = [];
     public List<AvailabilityDatabaseStatus> AvailabilityDatabases { get; } = [];
-}
-
-/// <summary>Query Store's config/state for one database. A separate Info/Low/High HealthCheckFinding
-/// is generated per database from this (see HealthCheckAnalyzer.RunQueryStoreStatus) - this type just
-/// carries the raw numbers.</summary>
-public sealed class QueryStoreStatus
-{
-    public string DatabaseName { get; init; } = "";
-    public string ActualStateDesc { get; init; } = "";   // OFF, READ_ONLY, READ_WRITE, ERROR
-    public string DesiredStateDesc { get; init; } = "";
-    /// <summary>Bitmask - see sys.database_query_store_options docs. Notably: 65536 = hit
-    /// max_storage_size_mb, 131072 = too many distinct statements, 524288 = database out of disk space.</summary>
-    public int ReadonlyReason { get; init; }
-    public decimal CurrentStorageSizeMb { get; init; }
-    public decimal MaxStorageSizeMb { get; init; }
-    public string QueryCaptureModeDesc { get; init; } = "";
-}
-
-public sealed class QueryStoreTopQuery
-{
-    public string DatabaseName { get; init; } = "";
-    public long QueryId { get; init; }
-    public string QueryText { get; init; } = "";
-    public long TotalExecutions { get; init; }
-    public double AvgCpuTimeMs { get; init; }
-    public double AvgDurationMs { get; init; }
-    /// <summary>8KB pages - same unit as CachedQuery.TotalLogicalReads elsewhere in this tool.</summary>
-    public double AvgLogicalReads { get; init; }
 }
 
 /// <summary>One Availability Group replica's connection/sync health (server-wide, not per-database).</summary>
@@ -401,6 +370,10 @@ public sealed class IndexInfo
 
 public sealed class CachedQuery
 {
+    /// <summary>"PlanCache" (evictable, from MatchPlanCacheQueries) or "QueryStore" (persisted,
+    /// restart-surviving, from MatchQueryStoreQueries) - kept distinct rather than silently merged
+    /// so a reader can judge how much to trust the numbers.</summary>
+    public string Source { get; init; } = "PlanCache";
     public long ExecutionCount { get; init; }
     public long TotalLogicalReads { get; init; }
     public double TotalCpuMs { get; init; }

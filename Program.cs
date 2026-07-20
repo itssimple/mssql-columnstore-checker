@@ -126,6 +126,20 @@ public static class Program
             Console.WriteLine("Plan cache scrape failed (non-fatal): " + ex.Message);
         }
 
+        Console.WriteLine("Checking Query Store for additional (restart-surviving) referencing-query evidence ...");
+        try
+        {
+            var queryStoreCaveat = analyzer.MatchQueryStoreQueries(tables);
+            if (queryStoreCaveat != null)
+                Console.WriteLine("NOTE: " + queryStoreCaveat);
+            else
+                Console.WriteLine($"Matched queries for {tables.Count(t => t.ReferencingQueries.Count > 0)} table(s) (plan cache + Query Store combined).");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Query Store enrichment failed (non-fatal): " + ex.Message);
+        }
+
         foreach (var t in tables)
             Scoring.Score(t);
 

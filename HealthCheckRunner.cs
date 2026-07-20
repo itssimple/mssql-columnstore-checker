@@ -31,8 +31,6 @@ public static class HealthCheckRunner
         Step("job ownership audit", () => result.Findings.AddRange(hc.RunJobOwnerAudit()));
         Step("security/access inventory", () => result.Findings.AddRange(hc.RunSecurityInventory()));
         Step("topology rollup", () => result.Findings.AddRange(hc.RunTopologyRollup()));
-        Step("Query Store status", () => result.Findings.AddRange(hc.RunQueryStoreStatus()));
-        Step("Query Store top queries", () => result.QueryStoreTopQueries.AddRange(hc.RunQueryStoreTopQueries()));
         Step("Availability Group health", () =>
         {
             var findings = hc.RunAvailabilityGroupHealth(out var replicas, out var databases);

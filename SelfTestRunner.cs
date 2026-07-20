@@ -74,6 +74,12 @@ public static class SelfTestRunner
             analyzer.MatchPlanCacheQueries(sample);
             return $"matched {sample.Count(t => t.ReferencingQueries.Count > 0)} of {sample.Count} table(s)";
         });
+
+        Step(result, "Columnstore", "MatchQueryStoreQueries", () =>
+        {
+            var caveat = analyzer.MatchQueryStoreQueries(sample);
+            return caveat ?? $"matched {sample.Count(t => t.ReferencingQueries.Count > 0)} of {sample.Count} table(s) (plan cache + Query Store combined)";
+        });
     }
 
     // ======================================================================================
@@ -91,8 +97,6 @@ public static class SelfTestRunner
         Step(result, "HealthCheck-Native", "RunJobOwnerAudit", () => $"{hc.RunJobOwnerAudit().Count} finding(s)");
         Step(result, "HealthCheck-Native", "RunSecurityInventory", () => $"{hc.RunSecurityInventory().Count} finding(s)");
         Step(result, "HealthCheck-Native", "RunTopologyRollup", () => $"{hc.RunTopologyRollup().Count} finding(s)");
-        Step(result, "HealthCheck-Native", "RunQueryStoreStatus", () => $"{hc.RunQueryStoreStatus().Count} finding(s)");
-        Step(result, "HealthCheck-Native", "RunQueryStoreTopQueries", () => $"{hc.RunQueryStoreTopQueries().Count} quer(y/ies)");
         Step(result, "HealthCheck-Native", "RunAvailabilityGroupHealth",
             () => $"{hc.RunAvailabilityGroupHealth(out var replicas, out var databases).Count} finding(s), {replicas.Count} replica(s), {databases.Count} database(s)");
         Step(result, "HealthCheck-Native", "RunReplicationErrors", () => $"{hc.RunReplicationErrors().Count} finding(s)");

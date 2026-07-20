@@ -162,36 +162,6 @@ SELECT
     (SELECT COUNT(*) FROM sys.databases WHERE is_cdc_enabled = 1) AS cdc_db_count,
     (SELECT COUNT(*) FROM sys.dm_hadr_availability_replica_states) AS ag_replica_count;";
 
-    // ---- Query Store ({0} = escaped database name) --------------------------------------
-    // Requires VIEW DATABASE PERFORMANCE STATE (SQL 2022+) or VIEW DATABASE STATE (2016-2019).
-
-    /// <summary>One row per database, always present (even if Query Store has never been turned on -
-    /// actual_state_desc is 'OFF' in that case, not a missing row).</summary>
-    public const string QueryStoreStatusFmt = @"
-SELECT actual_state_desc, desired_state_desc, readonly_reason, current_storage_size_mb,
-       max_storage_size_mb, query_capture_mode_desc
-FROM {0}.sys.database_query_store_options;";
-
-    /// <summary>Top resource-consuming queries from Query Store - persisted, restart-surviving history,
-    /// unlike the plan-cache scrape/sp_BlitzCache elsewhere in this tool. avg_cpu_time/avg_duration are
-    /// in MICROSECONDS; avg_logical_io_reads is in 8KB pages (same unit as CachedQuery.TotalLogicalReads
-    /// elsewhere in this tool, via sys.dm_exec_query_stats - both are page counts, no unit mismatch).
-    /// Param: @N = top count.</summary>
-    public const string QueryStoreTopQueriesFmt = @"
-SELECT TOP (@N)
-    qsq.query_id,
-    qsqt.query_sql_text,
-    SUM(rs.count_executions) AS total_executions,
-    AVG(rs.avg_cpu_time) AS avg_cpu_time_us,
-    AVG(rs.avg_duration) AS avg_duration_us,
-    AVG(rs.avg_logical_io_reads) AS avg_logical_io_reads_pages
-FROM {0}.sys.query_store_query qsq
-JOIN {0}.sys.query_store_query_text qsqt ON qsqt.query_text_id = qsq.query_text_id
-JOIN {0}.sys.query_store_plan qsp ON qsp.query_id = qsq.query_id
-JOIN {0}.sys.query_store_runtime_stats rs ON rs.plan_id = qsp.plan_id
-GROUP BY qsq.query_id, qsqt.query_sql_text
-ORDER BY SUM(rs.avg_cpu_time * rs.count_executions) DESC;";
-
     // ---- Availability Groups / replication ------------------------------------------------
     // Requires VIEW SERVER PERFORMANCE STATE (SQL 2022+) or VIEW SERVER STATE (2019 and earlier)
     // for the two dm_hadr_* views. Both return zero rows gracefully (not an error) on an instance

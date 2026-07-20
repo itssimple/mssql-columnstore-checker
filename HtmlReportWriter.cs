@@ -227,30 +227,10 @@ public static class HtmlReportWriter
         }
 
         AppendFindingsByCategory(sb, health);
-        AppendQueryStoreTopQueries(sb, health);
         AppendAvailabilityGroupDetail(sb, health);
         AppendRawResultSets(sb, health);
         AppendTribalKnowledgeCapture(sb, health);
         AppendInstallActions(sb, health);
-    }
-
-    private static void AppendQueryStoreTopQueries(StringBuilder sb, HealthCheckResult health)
-    {
-        if (health.QueryStoreTopQueries.Count == 0) return;
-
-        sb.AppendLine("<section><h2>Query Store — top queries</h2>");
-        sb.AppendLine("<p class=\"muted\">Persisted, restart-surviving query performance history - unlike the plan-cache scrape/sp_BlitzCache elsewhere in this report.</p>");
-        foreach (var dbGroup in health.QueryStoreTopQueries.GroupBy(q => q.DatabaseName).OrderBy(g => g.Key))
-        {
-            sb.AppendLine("<details>");
-            sb.AppendLine($"<summary>{H(dbGroup.Key)} <span class=\"muted\">({dbGroup.Count()} quer(y/ies))</span></summary>");
-            sb.AppendLine("<table class=\"scroll-wrap\"><thead><tr><th>Executions</th><th>Avg CPU (ms)</th><th>Avg Duration (ms)</th><th>Avg Logical Reads</th><th>Query text</th></tr></thead><tbody>");
-            foreach (var q in dbGroup.OrderByDescending(q => q.AvgCpuTimeMs * q.TotalExecutions))
-                sb.AppendLine($"<tr><td>{q.TotalExecutions:N0}</td><td>{q.AvgCpuTimeMs:N1}</td><td>{q.AvgDurationMs:N1}</td>" +
-                              $"<td>{q.AvgLogicalReads:N0}</td><td><code>{H(Truncate(q.QueryText, 300))}</code></td></tr>");
-            sb.AppendLine("</tbody></table></details>");
-        }
-        sb.AppendLine("</section>");
     }
 
     private static void AppendAvailabilityGroupDetail(StringBuilder sb, HealthCheckResult health)
@@ -271,8 +251,6 @@ public static class HtmlReportWriter
                           $"<td>{db.LogSendQueueSizeKb:N0} KB</td><td>{db.RedoQueueSizeKb:N0} KB</td><td>{(db.SecondaryLagSeconds != null ? $"{db.SecondaryLagSeconds:N0}" : "-")}</td></tr>");
         sb.AppendLine("</tbody></table></section>");
     }
-
-    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "...";
 
     private static void AppendFindingsByCategory(StringBuilder sb, HealthCheckResult health)
     {
